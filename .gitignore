@@ -1,0 +1,18 @@
+# Downloaded source dictionaries (re-download from their sites)
+JMdict_english.zip
+jitendex-yomitan.zip
+JMdict_e.gz
+JMdict_e.xml
+JMdict_e
+
+# Generated dictionaries: rebuild with the scripts in migaku-supplement/
+migaku-supplement/*.json
+migaku-supplement/*.zip
+
+# ...except the one imported into Migaku
+!migaku-supplement/jitendex-migaku-html.zip
+
+# OS / Python clutter
+.DS_Store
+__pycache__/
+*.pyc
