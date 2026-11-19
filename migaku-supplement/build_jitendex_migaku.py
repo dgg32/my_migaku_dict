@@ -11,7 +11,7 @@ replaced by the full definition of the entry they point to.
 
 Usage:
   python3 build_jitendex_migaku.py jitendex-yomitan.zip --format html --outdir .
-  options: --no-examples  --no-forms  --name NAME
+  options: --no-examples  --no-forms  --examples-field  --name NAME
 
 Jitendex (c) Stephen Kraus, CC BY-SA 4.0 (https://jitendex.org), built on
 JMdict (c) EDRDG (CC BY-SA 3.0/4.0) and Tatoeba example sentences (CC BY 2.0 FR).
@@ -22,15 +22,22 @@ KEYS = ["term", "altterm", "pronunciation", "definition", "pos", "examples", "au
 
 # colours copied from Jitendex's styles.css
 TAG_STYLE = {
-    "part-of-speech-info": ("#565656", "#fff"),
-    "misc-info": ("#a52a2a", "#fff"),
-    "field-info": ("#800080", "#fff"),
-    "dialect-info": ("#008000", "#fff"),
-    "lang-source-wasei": ("#ffa500", "#000"),
+    "part-of-speech-info": ("#555", "#fff"),
+    "misc-info": ("#a22", "#fff"),
+    "field-info": ("#808", "#fff"),
+    "dialect-info": ("#080", "#fff"),
 }
+POS_KIND = "part-of-speech-info"
+# (term, reading) pairs of every Jitendex headword; used to split per-kanji
+# furigana into words. Filled in main().
+KNOWN = set()
+
+
+def esc(s):
+    return html.escape(s, quote=False)
 TERM_TAG_LABELS = {"rarely used form", "irregular form", "old kanji form",
                    "obsolete reading", "ateji form", "search-only form",
-                   "outdated kanji form", "outdated kana form"}
+                   "outdated kanji form", "outdated kana form", "special reading"}
 
 
 def dc(n):
@@ -63,9 +70,29 @@ def ruby_parts(n):
     return base, rt
 
 
+def join_ruby(run):
+    """Jitendex gives furigana one kanji at a time (以(い)上(じょう)何(なに)) with no
+    word boundaries. Split the run into dictionary words, longest match first:
+    以上(いじょう)何(なに). Neighbouring kanji that match no word stay together."""
+    segs, i = [], 0
+    while i < len(run):
+        for j in range(len(run), i, -1):
+            b = "".join(p[0] for p in run[i:j])
+            r = "".join(p[1] for p in run[i:j])
+            known = (b, r) in KNOWN
+            if known or j == i + 1:
+                if not known and segs and not segs[-1][2]:
+                    pb, pr, _ = segs.pop()
+                    b, r = pb + b, pr + r
+                segs.append((b, r, known))
+                i = j
+                break
+    return "".join(f"{b}({r})" if r else b for b, r, _ in segs)
+
+
 def text(n, ruby_html=False):
     """Inline text of a node. Ruby -> base text, or with ruby_html (HTML mode)
-    adjacent ruby nodes are merged into 'base(reading)', e.g. 彼女(かのじょ)."""
+    adjacent ruby nodes become 'word(reading)', e.g. 彼女(かのじょ)."""
     if isinstance(n, str):
         return html.escape(n, quote=False) if ruby_html else n
     if isinstance(n, list):
@@ -77,8 +104,7 @@ def text(n, ruby_html=False):
                 run.append(ruby_parts(x))
                 continue
             if run:
-                b, r = "".join(p[0] for p in run), "".join(p[1] for p in run)
-                out.append(html.escape(f"{b}({r})" if r else b, quote=False))
+                out.append(esc(join_ruby(run)))
                 run = []
             if x is not None:
                 out.append(text(x, True))
@@ -112,6 +138,11 @@ def find(n, pred, stop=lambda x: False):
 
 def is_tag(n):
     return dclass(n) == "tag" and dc(n) in TAG_STYLE
+
+
+def is_special(n):
+    """Placeholder cells such as ∅ ("no associated kanji forms")."""
+    return dclass(n) == "form-special" or bool(find(n, lambda x: dclass(x) == "form-special"))
 
 
 def parse_extra(box):
@@ -149,8 +180,11 @@ def parse_entry(sc):
         pos = [((t.get("data") or {}).get("code")) for t in
                find(g, lambda x: dc(x) == "part-of-speech-info", stop=lambda x: dc(x) == "sense")]
         senses = []
+        gstyle = (g.get("style") or {}).get("listStyleType", "")
         for s in find(g, lambda x: dc(x) == "sense"):
-            m = re.match(r'^"(.*)"$', (s.get("style") or {}).get("listStyleType", ""))
+            # multi-sense groups number each sense; a single-sense group carries
+            # the number on the group itself
+            m = re.match(r'^"(.*)"$', (s.get("style") or {}).get("listStyleType", "") or gstyle)
             senses.append(parse_sense(s, m.group(1) if m else ""))
         groups.append({"tags": gtags, "pos": [p for p in pos if p], "senses": senses})
     forms, readings = [], []
@@ -163,58 +197,78 @@ def parse_entry(sc):
                 cells = [c for c in children(row) if isinstance(c, dict)]
                 if dc(row) == "forms-header-row":
                     forms += [text(c) for c in cells if c.get("tag") == "th" and text(c)
-                              and dc(c) != "forms-row-senses"]
-                elif cells and cells[0].get("tag") == "th":
-                    readings.append(text(cells[0]))
+                              and dc(c) != "forms-row-senses" and not is_special(c)]
+                else:
+                    # rows of readings that apply to only some senses start with a
+                    # marker cell (＊, ①③); the reading is the th after it
+                    cells = [c for c in cells if dc(c) != "forms-row-senses"]
+                    if cells and cells[0].get("tag") == "th":
+                        readings.append(text(cells[0]))
         else:
             forms += [text(li) for ul in find(f, lambda x: x.get("tag") == "ul")
-                      for li in children(ul) if isinstance(li, dict)]
+                      for li in children(ul) if isinstance(li, dict) and not is_special(li)]
     forms = [re.sub(r"（★）$", "", x) for x in forms]
-    return {"groups": groups, "forms": [x for x in forms if x and x != "＊"],
+    return {"groups": groups, "forms": [x for x in forms if x and x not in ("＊", "∅")],
             "readings": [x for x in readings if x]}
 
 
 # ---------------------------------------------------------------- formatters
 
-def badge(kind, label, title=""):
-    bg, fg = TAG_STYLE.get(kind, ("#565656", "#fff"))
-    # kept short on purpose: this badge appears ~1.4 million times
-    return f'<b style="background:{bg};color:{fg};font-size:.8em">&nbsp;{html.escape(label)}&nbsp;</b> '
+def badge(kind, label):
+    bg, fg = TAG_STYLE.get(kind, TAG_STYLE[POS_KIND])
+    # kept short on purpose: badges appear hundreds of thousands of times
+    return f'<b style="background:{bg};color:{fg}">&nbsp;{esc(label)}&nbsp;</b>'
 
 
-def fmt_html(e, term_tags, examples=True, forms=True):
-    out = []
+def grey(label):
+    return f'<i style="color:#888">{esc(label)}</i>'
+
+
+def tags_html(tags):
+    """Part of speech as grey italics, every other tag as a coloured badge."""
+    pos = [l for k, l, _ in tags if k == POS_KIND]
+    return " ".join(([grey(", ".join(pos))] if pos else [])
+                    + [badge(k, l) for k, l, _ in tags if k != POS_KIND])
+
+
+def fmt_html(e, term_tags, examples=True, forms=True, examples_field=False):
+    """Returns (definition, examples). Example sentences go into the definition,
+    or into the separate examples string when examples_field is set."""
+    out, exs = [], []
     if term_tags:
-        out.append("".join(badge("misc-info", t) for t in term_tags))
+        out.append(" ".join(badge("misc-info", t) for t in term_tags))
     for g in e["groups"]:
         if g["tags"]:
-            out.append("".join(badge(k, l, ti) for k, l, ti in g["tags"]))
+            out.append(tags_html(g["tags"]))
         for s in g["senses"]:
-            line = (s["num"] + " " if s["num"] else "")
-            line += "".join(badge(k, l, ti) for k, l, ti in s["tags"])
-            line += html.escape("; ".join(s["glosses"]))
             # only <br>, <b>, <i>, <span>: block elements and <ruby> are not
             # rendered in every Migaku view (search page flattens them)
-            out.append(line)
+            out.append(" ".join(x for x in (s["num"], tags_html(s["tags"]),
+                                            esc("; ".join(s["glosses"]))) if x))
             for x in s["extras"]:
                 if x["kind"] == "example-sentence":
-                    if examples:
-                        out.append(f'&emsp;▸ {x["ja_html"]}')
-                        out.append(f'&emsp;&emsp;<span style="opacity:.75">{html.escape(x["en"])}</span>')
+                    if not examples:
+                        continue
+                    ja, en = x["ja_html"], f'<span style="opacity:.75">{esc(x["en"])}</span>'
+                    if examples_field:
+                        exs.append(f"{s['num']} ▸ {ja}<br>&emsp;{en}".strip())
+                    else:
+                        out.append(f"&emsp;▸ {ja}")
+                        out.append(f"&emsp;&emsp;{en}")
                 elif x["kind"] in ("xref", "antonym"):
-                    out.append(f'&emsp;<i>{html.escape(x["label"])}</i> {html.escape(x["word"])}'
-                               + (f' — {html.escape(x["gloss"])}' if x["gloss"] else ""))
+                    out.append(f'&emsp;<i>{esc(x["label"])}</i> {esc(x["word"])}'
+                               + (f' — {esc(x["gloss"])}' if x["gloss"] else ""))
                 else:
-                    out.append(f'&emsp;<i>{html.escape(x["label"])}:</i> {html.escape(x["body"])}')
+                    out.append(f'&emsp;<i>{esc(x["label"])}:</i> {esc(x["body"])}')
     if forms and len(e["forms"]) > 1:
-        out.append(badge("part-of-speech-info", "forms") + html.escape("・".join(e["forms"])))
+        out.append(grey("forms") + " " + esc("・".join(e["forms"])))
     if forms and len(e["readings"]) > 1:
-        out.append(badge("part-of-speech-info", "readings") + html.escape("・".join(e["readings"])))
-    return "<br>".join(out)
+        out.append(grey("readings") + " " + esc("・".join(e["readings"])))
+    return "<br>".join(out), "<br>".join(exs)
 
 
-def fmt_text(e, term_tags, examples=True, forms=True):
-    out = []
+def fmt_text(e, term_tags, examples=True, forms=True, examples_field=False):
+    out, exs = [], []
     if term_tags:
         out.append(" ".join(f"[{t}]" for t in term_tags))
     for g in e["groups"]:
@@ -226,7 +280,9 @@ def fmt_text(e, term_tags, examples=True, forms=True):
             line += "; ".join(s["glosses"])
             for x in s["extras"]:
                 if x["kind"] == "example-sentence":
-                    if examples:
+                    if examples and examples_field:
+                        exs.append(f"▸ {x['ja']} ({x['en']})")
+                    elif examples:
                         line += f" ▸ {x['ja']} ({x['en']})"
                 elif x["kind"] in ("xref", "antonym"):
                     line += f" ({x['label']}: {x['word']}" + (f" — {x['gloss']}" if x["gloss"] else "") + ")"
@@ -237,7 +293,7 @@ def fmt_text(e, term_tags, examples=True, forms=True):
         out.append("[forms] " + "・".join(e["forms"]))
     if forms and len(e["readings"]) > 1:
         out.append("[readings] " + "・".join(e["readings"]))
-    return " / ".join(out)
+    return " / ".join(out), " / ".join(exs)
 
 
 # ---------------------------------------------------------------- main
@@ -260,14 +316,16 @@ def is_redirect(r):
 
 
 def redirect_target(r):
+    def clean(t):
+        return t.lstrip("⟶").strip() or None
     for d in r[5]:
         if isinstance(d, list) and d and isinstance(d[0], str):
-            return d[0]
+            return clean(d[0])
     for d in r[5]:
         if isinstance(d, dict):
             links = find(d, lambda x: x.get("tag") == "a")
             if links:
-                return text(links[0])
+                return clean(text(links[0]))
     return None
 
 
@@ -277,17 +335,29 @@ def main():
     ap.add_argument("--format", choices=["html", "text"], default="html")
     ap.add_argument("--no-examples", action="store_true")
     ap.add_argument("--no-forms", action="store_true")
+    ap.add_argument("--examples-field", action="store_true",
+                    help="put example sentences in Migaku's separate 'examples' field "
+                         "instead of inside the definition")
     ap.add_argument("--outdir", default=".")
     ap.add_argument("--name")
     a = ap.parse_args()
 
     index, rows = load_rows(a.zip)
+    for r in rows:
+        if r[1]:
+            KNOWN.add((r[0], r[1]))
+            # also the kanji stem of words with trailing kana: 役立つ/やくだつ -> 役立/やくだ
+            m = re.fullmatch(r"(.*[^\u3040-\u30ff])([\u3040-\u30ff]+)", r[0])
+            if m and r[1].endswith(m.group(2)) and len(r[1]) > len(m.group(2)):
+                KNOWN.add((m.group(1), r[1][:-len(m.group(2))]))
     fmt = fmt_html if a.format == "html" else fmt_text
     ex, fo = not a.no_examples, not a.no_forms
 
     def term_tags(r):
-        return [t.replace("\xa0", " ") for t in re.split(r" (?=\S)", r[2] or "")
-                if t.replace("\xa0", " ") in TERM_TAG_LABELS]
+        # Jitendex's "★" / "priority form" (common word) is left out on purpose:
+        # Migaku shows its own frequency rating next to the word
+        tags = [t.replace("\xa0", " ") for t in re.split(r" (?=\S)", r[2] or "")]
+        return [t for t in tags if t in TERM_TAG_LABELS]
 
     # pass 1: full entries
     full, by_seq_term, by_seq = [], {}, {}
@@ -296,9 +366,14 @@ def main():
         if is_redirect(r):
             redirects.append(r)
             continue
-        sc = next(d for d in r[5] if isinstance(d, dict) and d.get("type") == "structured-content")
+        sc = next((d for d in r[5] if isinstance(d, dict) and d.get("type") == "structured-content"),
+                  None)
+        if sc is None:
+            sys.exit(f"row {r[0]} [{r[1]}] seq {r[6]}: no structured-content glossary "
+                     "(has the Jitendex format changed?)")
         e = parse_entry(sc)
-        pos = ",".join(e["groups"][0]["pos"]) if e["groups"] else ""
+        # part-of-speech codes of every sense group, in order, without repeats
+        pos = ",".join(dict.fromkeys(p for g in e["groups"] for p in g["pos"]))
         rec = {"term": r[0], "pronunciation": r[1] or r[0], "pos": pos, "e": e, "tt": term_tags(r),
                "main": e["forms"][0] if e["forms"] else "", "seq": r[6]}
         full.append(rec)
@@ -313,6 +388,8 @@ def main():
         rec = by_seq_term.get((seq, tgt)) or by_seq.get(seq)
         if rec is None:
             unresolved += 1
+            print(f"warning: redirect {r[0]} [{r[1]}] -> {tgt!r} (seq {r[6]}) not resolved",
+                  file=sys.stderr)
             full.append({"term": r[0], "pronunciation": r[1] or r[0], "pos": "", "e": None,
                          "tt": term_tags(r), "main": tgt or "", "seq": r[6],
                          "plain": f"⟶ {tgt}" if tgt else ""})
@@ -322,13 +399,14 @@ def main():
 
     out, empty = [], 0
     for rec in full:
-        d = fmt(rec["e"], rec["tt"], ex, fo) if rec.get("e") else rec.get("plain", "")
+        d, exs = (fmt(rec["e"], rec["tt"], ex, fo, a.examples_field) if rec.get("e")
+                  else (rec.get("plain", ""), ""))
         if not d.strip():
             empty += 1
             continue
         alt = rec["main"] if rec["main"] != rec["term"] else ""
         out.append({"term": rec["term"], "altterm": alt, "pronunciation": rec["pronunciation"],
-                    "definition": d, "pos": rec["pos"], "examples": "", "audio": ""})
+                    "definition": d, "pos": rec["pos"], "examples": exs, "audio": ""})
 
     name = a.name or f"jitendex-migaku-{a.format}"
     os.makedirs(a.outdir, exist_ok=True)

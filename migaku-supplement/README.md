@@ -42,11 +42,15 @@ spellings) to the full entry they point to.
 
 | File | Records | Contents |
 |---|---|---|
-| `jitendex-migaku-html.json` / `.zip` | 436,555 | Simple HTML with inline colours: tag badges, ①② senses, example sentences with readings in brackets (私(わたし)), notes, cross-references, variant forms. |
+| `jitendex-migaku-html.json` / `.zip` | 436,555 | Simple HTML with inline colours: part of speech in grey italics, other tags as coloured badges, ①② senses, example sentences with readings in brackets per word (以上(いじょう)何(なに)), notes, cross-references, variant forms. `pos` lists the codes of every sense group. |
 | `jitendex-migaku-text.json` / `.zip` | 436,555 | The same content on one plain-text line: `[5-dan] [transitive] gloss ▸ example (translation) / …` |
 | `jitendex-html-preview.html` | 9 | Local preview of how the HTML version should look in a browser. |
 
-Dropped in the conversion: images (444 entries with photos and 250 rare-kanji SVGs),
+Jitendex gives example-sentence furigana one kanji at a time, with no word boundaries.
+The converter groups the kanji back into words by matching Jitendex's own headwords
+(and their kanji stems, e.g. 役立 of 役立つ), longest match first.
+
+Dropped in the conversion: Jitendex's ★ common-word mark (Migaku shows its own frequency), images (444 entries with photos and 250 rare-kanji SVGs),
 clickable links, per-entry attribution links, and the forms validity table
 (reduced to a list of spellings and readings).
 
@@ -57,3 +61,5 @@ works and remain under CC BY-SA 4.0.
 
     python3 build_jitendex_migaku.py ../jitendex-yomitan.zip --format html   # or text
     # options: --no-examples  --no-forms  --outdir DIR  --name NAME
+    #          --examples-field  (example sentences go in Migaku's separate `examples`
+    #                             field instead of the definition; untested in Migaku)
