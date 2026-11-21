@@ -82,3 +82,86 @@ def test_api_smoke():
     assert r.json()["paragraphs"][0][0]["k"][0] == "一にも二にも"
     assert c.post("/api/lookup", json={"keys": ["一にも二にも"]}).json()[0]["readings"] == ["いちにもににも"]
     assert c.post("/api/analyze", json={}).status_code == 422
+
+
+@pytest.mark.parametrize("text,word,key,chain", [
+    ("接見された", "接見された", "接見", "-suru < passive or respectful < past"),
+    ("食べられる", "食べられる", "食べる", "passive, potential or respectful"),
+    ("書かれていた", "書かれていた", "書く", "passive or respectful < -te iru < past"),
+    ("食べさせたくない", "食べさせたくない", "食べる", "causative < want to < negative"),
+    ("行きませんでした", "行きませんでした", "行く", "polite < negative < past"),
+    ("呑んだ", "呑んだ", "呑む", "past"),
+    ("来い", "来い", "来る", "imperative"),
+    ("希望が抱ける", "抱ける", "抱く", "potential"),
+    ("的を射た", "的を射た", "的を射る", "past"),
+])
+def test_conjugation_chain(text, word, key, chain):
+    seg = next(s for p in server.analyze(text) for s in p if s.get("w") and s["t"] == word)
+    assert seg["c"][key] == chain
+
+
+def test_no_chain_for_dictionary_forms():
+    segs = [s for p in server.analyze("食べる家庭環境") for s in p if s.get("w")]
+    assert all("c" not in s for s in segs)
+
+
+@pytest.mark.parametrize("text,word,expected", [
+    ("今日は暑い。", "今日", "今日(きょう)"),        # not the greeting こんにちは
+    ("今日は、いい天気。", "今日", "今日(きょう)"),
+    ("「今日は」と言った。", "今日は", "今日(こんにち)は"),  # a real greeting stays one word
+])
+def test_greeting_only_before_sentence_end(text, word, expected):
+    assert words(text)[word] == expected
+
+
+@pytest.mark.parametrize("text,word,options", [
+    ("赤ん坊を抱く。", "抱く", {"いだく", "だく"}),
+    ("母親が子供を抱いて眠った。", "抱いて", {"いだいて", "だいて"}),
+    ("父に手紙を認める。", "認める", {"みとめる", "したためる"}),
+    ("その日、市場へ行った。", "市場", {"しじょう", "いちば"}),
+])
+def test_ambiguous_words_offer_alternatives(text, word, options):
+    seg = next(s for p in server.analyze(text) for s in p if s.get("w") and s["t"] == word)
+    assert options <= {a[0] for a in seg["a"]}
+
+
+@pytest.mark.parametrize("text,word", [("来ます。", "来ます"), ("行った。", "行った"), ("家庭環境", "家庭環境")])
+def test_no_alternatives_for_irregular_or_unambiguous(text, word):
+    seg = next(s for p in server.analyze(text) for s in p if s.get("w") and s["t"] == word)
+    assert "a" not in seg
+
+
+def test_analyze_stream_matches_analyze():
+    import json
+    from fastapi.testclient import TestClient
+    c = TestClient(server.app)
+    text = ("「一にも二にも家庭環境です。」\n\n𠮷野家で食べた。\n" + "早くも檜葉が尊属殺人の規定を念頭に置いてはいないかと、警戒心を張り巡らせる。\n" * 120)
+    full = c.post("/api/analyze", json={"text": text}).json()
+    lines = [json.loads(x) for x in c.post("/api/analyze_stream", json={"text": text}).text.splitlines()]
+    assert lines[0]["text"] == full["text"]
+    assert len(lines) > 2  # actually chunked
+    assert [p for x in lines[1:] for p in x["paragraphs"]] == full["paragraphs"]
+
+
+def test_names_lists_person_readings_first():
+    from fastapi.testclient import TestClient
+    names = TestClient(server.app).get("/api/names", params={"word": "平城"}).json()["names"]
+    readings = [n["reading"] for n in names]
+    assert "ひらじろ" in readings and "へいじょう" in readings
+    assert "surname" in names[0]["types"] or "place" in names[0]["types"]
+
+
+def test_pins_apply_everywhere_but_not_to_counters(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(server, "PINS_PATH", tmp_path / "pins.json")
+    monkeypatch.setattr(server, "PINS", {})
+    c = TestClient(server.app)
+    assert c.post("/api/pins", json={"word": "円", "reading": "マドカ"}).json()["pins"] == {"円": "まどか"}
+    en = ["".join(r for b, r in sg["r"]) for p in server.analyze("平城よりも円だった。三百二十円で買った。円は笑った。")
+          for sg in p if sg.get("w") and sg["t"] == "円"]
+    assert en == ["まどか", "えん", "まどか"]  # the yen counter after 三百二十 is untouched
+    seg = next(s for p in server.analyze("円は笑った。") for s in p if s.get("w") and s["t"] == "円")
+    assert seg["pin"] == 1 and "a" not in seg  # pinned words skip the AI check
+    assert c.post("/api/pins", json={"word": "円", "reading": None}).json()["pins"] == {}
+    assert c.post("/api/pins", json={"word": "円", "reading": "madoka"}).status_code == 400
+    assert (tmp_path / "pins.json").exists()

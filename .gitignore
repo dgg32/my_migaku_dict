@@ -21,3 +21,6 @@ __pycache__/
 reader/.venv/
 reader/data/
 reader/.env
+
+# Names dictionary source (rebuild: reader/build_db.py)
+JMnedict.xml.gz

@@ -3,16 +3,28 @@
 Usage:  python build_db.py [path/to/jitendex-yomitan.zip]
 Writes: data/jitendex.sqlite and data/jitendex.css
 """
+import gzip
 import json
 import re
 import sqlite3
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 DEFAULT_ZIP = HERE.parent / "jitendex-yomitan.zip"
+DEFAULT_NAMES = HERE.parent / "JMnedict.xml.gz"
+
+# JMnedict name types (expanded DTD entities) -> short labels for the popup
+NAME_TYPES = {
+    "family or surname": "surname", "female given name or forename": "female given name",
+    "male given name or forename": "male given name", "given name or forename, gender not specified": "given name",
+    "full name of a particular person": "person", "place name": "place", "unclassified name": "name",
+    "railway station": "station", "organization name": "organization", "company name": "company",
+    "work of art, literature, music, etc. name": "work", "product name": "product",
+}
 
 
 def build(zip_path: Path = DEFAULT_ZIP, out_dir: Path = DATA) -> Path:
@@ -79,5 +91,43 @@ def build(zip_path: Path = DEFAULT_ZIP, out_dir: Path = DATA) -> Path:
     return db_path
 
 
+def build_names(gz_path: Path = DEFAULT_NAMES, db_path: Path = DATA / "jitendex.sqlite") -> int:
+    """Add (or replace) the JMnedict names table: one row per written form x reading."""
+    con = sqlite3.connect(db_path)
+    con.executescript("DROP TABLE IF EXISTS names; CREATE TABLE names "
+                      "(expression TEXT NOT NULL, reading TEXT NOT NULL, types TEXT, gloss TEXT, seq INTEGER);")
+    rows, count = [], 0
+    with gzip.open(gz_path) as f:
+        for _, el in ET.iterparse(f):
+            if el.tag != "entry":
+                continue
+            seq = int(el.findtext("ent_seq") or 0)
+            rebs = [r.text for r in el.iter("reb") if r.text]
+            kebs = [k.text for k in el.iter("keb") if k.text] or rebs
+            types = []
+            for n in el.iter("name_type"):
+                t = NAME_TYPES.get(n.text or "", n.text or "")
+                if t and t not in types:
+                    types.append(t)
+            gloss = "; ".join(t.text for t in el.iter("trans_det") if t.text)[:300]
+            for k in kebs:
+                for r in rebs:
+                    rows.append((k, r, ", ".join(types), gloss, seq))
+            el.clear()
+            if len(rows) > 50000:
+                con.executemany("INSERT INTO names VALUES (?,?,?,?,?)", rows)
+                count += len(rows)
+                rows = []
+    con.executemany("INSERT INTO names VALUES (?,?,?,?,?)", rows)
+    count += len(rows)
+    con.execute("CREATE INDEX idx_names_expr ON names(expression)")
+    con.commit()
+    con.close()
+    print(f"Wrote {count} name readings from {gz_path.name}")
+    return count
+
+
 if __name__ == "__main__":
     build(Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_ZIP)
+    if DEFAULT_NAMES.exists():
+        build_names()

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Japanese Reader</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='1' y='5' width='30' height='22' rx='3' fill='%23fff' stroke='%23d0d0d0' stroke-width='1.5'/%3E%3Ccircle cx='16' cy='16' r='6.6' fill='%23bc002d'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/jitendex.css">
 <style>
 :root {
@@ -17,6 +18,8 @@
   --hover: #f1edfb;
   --hl: #dfeafc;
   --phrase: #c9a227;
+  --conj: #b3261e;
+  --pinned: #0f7b6c;
   --shadow: 0 12px 40px rgba(40, 30, 80, .16), 0 2px 8px rgba(40, 30, 80, .08);
   --fs: 22px;
   --jp: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
@@ -24,7 +27,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #17161c; --panel: #211f29; --ink: #ebe8f3; --muted: #9a95ab; --line: #34303f;
-    --accent: #a993ff; --accent-soft: #2e2747; --hover: #2a2538; --hl: #233250; --phrase: #d9b648;
+    --accent: #a993ff; --accent-soft: #2e2747; --hover: #2a2538; --hl: #233250; --phrase: #d9b648; --conj: #ff8a80; --pinned: #4fd1b5;
     --shadow: 0 12px 40px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.3);
   }
 }
@@ -57,12 +60,13 @@ body.chat-hidden #sidebar { display: none; }
 
 /* ---------- reading view ---------- */
 #reader { max-width: 46em; margin: 0 auto; padding: 36px 32px 120px; font-size: var(--fs); line-height: 2.5; }
-#reader p { margin: 0 0 .2em; min-height: 1em; }
+#reader p { margin: 0 0 .2em; min-height: 1em; content-visibility: auto; }
 #reader p.blank { min-height: .8em; line-height: .8; }
 #reader rt { font-size: .48em; color: var(--muted); user-select: none; -webkit-user-select: none; letter-spacing: 0; }
 body.no-furi #reader rt { visibility: hidden; }
 .w { cursor: pointer; border-radius: 4px; transition: background .08s; }
 .w:hover { background: var(--hover); }
+.w.ai rt { color: var(--accent); }
 .w.p { text-decoration: underline dotted var(--phrase); text-underline-offset: .32em; text-decoration-thickness: 2px; }
 .w.active { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
 .hl { background: var(--hl); }
@@ -83,6 +87,7 @@ body.no-furi #reader rt { visibility: hidden; }
 .entry .hw { font-size: 24px; font-weight: 700; line-height: 1.9; }
 .entry .hw rt { font-size: 12px; font-weight: 500; color: var(--muted); }
 .entry .alt { font-size: 14px; color: var(--muted); margin-left: 8px; font-weight: 400; }
+.entry .infl { font-size: 14px; color: var(--conj); margin-left: 10px; font-weight: 500; }
 .entry .tags { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: middle; }
 .chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; white-space: nowrap; }
 .also { font-size: 12px; font-weight: 700; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; margin-top: 14px; }
@@ -94,12 +99,25 @@ body.no-furi #reader rt { visibility: hidden; }
 .gloss table { border-collapse: collapse; font-size: 13px; }
 .gloss td, .gloss th { border: 1px solid var(--line); padding: 2px 6px; }
 .none { color: var(--muted); padding: 14px 0; }
+.names { padding: 6px 0 10px; }
+.name { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line); flex-wrap: wrap; }
+.name:last-child { border-bottom: none; }
+.name b { font-size: 17px; min-width: 6em; }
+.name .gloss-en { color: var(--muted); font-size: 13px; flex: 1; min-width: 6em; }
+.pin { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; font-size: 12px; padding: 2px 10px; }
+.pin:hover { border-color: var(--accent); color: var(--accent); }
+.pin.on { background: var(--pinned); border-color: var(--pinned); color: #fff; }
+.names details summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: 4px 0; }
+.w.pinned rt { color: var(--pinned); }
 
 /* selection toolbar */
 #selbar { position: absolute; z-index: 25; display: flex; gap: 4px; background: var(--ink); border-radius: 999px; padding: 4px; box-shadow: var(--shadow); }
 #selbar[hidden] { display: none; }
 #selbar button { border: none; background: none; color: var(--bg); padding: 6px 14px; border-radius: 999px; font-size: 14px; }
 #selbar button:hover { background: rgba(255,255,255,.15); }
+.say { border: none; background: var(--accent-soft); color: var(--accent); border-radius: 999px; width: 32px; height: 32px; font-size: 15px; flex: none; }
+.say:hover { filter: brightness(.95); }
+.say.playing, #selbar button.playing { background: var(--accent); color: #fff; }
 
 /* translation */
 #trpop .src { color: var(--muted); font-size: 14px; }
@@ -142,6 +160,8 @@ body.no-furi #reader rt { visibility: hidden; }
   <button class="btn" id="btn-edit" title="Edit the text">✎ Edit</button>
   <button class="btn" id="btn-clear-text" title="Clear the text">🗑 Clear</button>
   <button class="btn on" id="btn-furi" title="Toggle furigana">ふりがな</button>
+  <button class="btn on" id="btn-ai-read" title="Let the AI choose readings of ambiguous words from context (抱く: いだく/だく)">AI 読み</button>
+  <button class="btn" id="btn-rate" title="Read-aloud speed">🔊 1×</button>
   <button class="btn icon" id="btn-smaller" title="Smaller text">A−</button>
   <button class="btn icon" id="btn-bigger" title="Larger text">A+</button>
   <span id="status"></span>
@@ -179,6 +199,7 @@ body.no-furi #reader rt { visibility: hidden; }
 <div id="trpop" class="pop" hidden></div>
 <div id="selbar" hidden>
   <button id="sel-tr">译 Translate</button>
+  <button id="sel-say">🔊 Read</button>
   <button id="sel-ask">💬 Ask</button>
 </div>
 
@@ -190,7 +211,7 @@ const store = {
   set(k, v) { try { localStorage.setItem("jr." + k, JSON.stringify(v)); } catch {} },
 };
 
-const state = { text: "", segs: [], chat: [], trCache: new Map(), sel: null, busy: false };
+const state = { text: "", segs: [], els: [], chat: [], trCache: new Map(), sel: null, busy: false, hasKey: false, gen: 0, abort: null, baseStatus: "", hl: [] };
 
 // ---------------------------------------------------------------- text loading
 function cleanPaste(t) {
@@ -212,44 +233,176 @@ async function postJSON(url, body) {
 async function load(text) {
   text = cleanPaste(text);
   if (!text) return;
-  setStatus("Analyzing…");
-  let data;
+  const gen = resetReader();
+  state.baseStatus = "Analyzing…";
+  updateStatus();
+  const ctrl = new AbortController();
+  state.abort = ctrl;
+  let count = 0;
   try {
-    data = await postJSON("/api/analyze", { text });
+    const r = await fetch("/api/analyze_stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal: ctrl.signal });
+    if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (gen !== state.gen) return; // a newer paste took over
+      if (value) buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const msg = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (msg.text !== undefined) {
+          state.text = msg.text;
+          store.set("text", state.text);
+          showReader();
+        } else {
+          appendParagraphs(msg.paragraphs);
+          count += msg.paragraphs.length;
+          await new Promise(requestAnimationFrame); // let the browser paint this chunk before the next
+          if (gen !== state.gen) return;
+        }
+      }
+      if (done) break;
+    }
   } catch (err) {
+    if (err.name === "AbortError" || gen !== state.gen) return;
     setStatus("⚠️ Could not analyze the text: " + err.message);
     return;
   }
-  state.text = data.text;
-  store.set("text", state.text);
-  renderReader(data.paragraphs);
-  showReader();
-  setStatus(`${state.text.replace(/\s/g, "").length.toLocaleString()} characters`);
+  if (!count) showEmpty();
+  state.baseStatus = `${state.text.replace(/\s/g, "").length.toLocaleString()} characters`;
+  updateStatus();
 }
 
-function renderReader(paragraphs) {
-  const root = $("#reader");
-  root.innerHTML = "";
-  state.segs = [];
+// Start over for a new text; returns the generation number that later async work checks against.
+function resetReader() {
+  if (state.abort) state.abort.abort();
+  const gen = ++state.gen;
   closeAll();
+  clearHighlight();
+  $("#reader").innerHTML = "";
+  state.segs = []; state.els = []; state.sel = null;
+  aiObserver.disconnect();
+  ai.pending = []; ai.changed = 0; ai.active = 0; ai.failed = false;
+  return gen;
+}
+
+// ---------------------------------------------------------------- rendering
+// Off-screen paragraphs skip layout and paint (content-visibility: auto). To keep the scrollbar steady,
+// each paragraph gets a height estimate from its length; once drawn, the browser remembers the real size.
+function estimateHeight(chars) {
+  const fs = store.get("fs", 22);
+  const w = $("#reader").clientWidth;
+  const width = w > 200 ? w - 64 : 700; // reader hidden (editor open): assume a typical column
+  const perLine = Math.max(8, Math.floor(width / fs));
+  return Math.max(1, Math.ceil(chars / perLine)) * fs * 2.5;
+}
+
+function wordHTML(s) {
+  return s.r.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt>${esc(rt)}</rt></ruby>` : esc(b))).join("");
+}
+
+function appendParagraphs(paragraphs) {
+  const frag = document.createDocumentFragment();
+  const observe = aiReadOn() && state.hasKey;
   for (const para of paragraphs) {
     const p = document.createElement("p");
-    if (!para.length || para.every((s) => !s.t.trim())) p.className = "blank";
-    let html = "";
+    const from = state.segs.length;
+    let html = "", chars = 0, ambiguous = false;
     for (const s of para) {
       const i = state.segs.push(s) - 1;
-      if (s.w) {
-        const inner = s.r.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt>${esc(rt)}</rt></ruby>` : esc(b))).join("");
-        html += `<span class="w${s.p ? " p" : ""}" data-i="${i}" data-s="${s.s}" data-e="${s.e}">${inner}</span>`;
-      } else {
-        html += `<span data-i="${i}" data-s="${s.s}" data-e="${s.e}">${esc(s.t)}</span>`;
-      }
+      chars += s.t.length;
+      if (s.a) ambiguous = true;
+      html += s.w
+        ? `<span class="w${s.p ? " p" : ""}${s.pin ? " pinned" : ""}"${s.pin ? ' title="Reading pinned by you"' : ""} data-i="${i}" data-s="${s.s}" data-e="${s.e}">${wordHTML(s)}</span>`
+        : `<span data-i="${i}" data-s="${s.s}" data-e="${s.e}">${esc(s.t)}</span>`;
     }
+    if (!chars || !para.some((s) => s.t.trim())) p.className = "blank";
+    else p.style.containIntrinsicSize = `auto ${Math.round(estimateHeight(chars))}px`;
     p.innerHTML = html;
-    root.append(p);
+    for (let k = 0; k < p.children.length; k++) state.els[from + k] = p.children[k]; // span k is segment from+k
+    p.dataset.from = from; p.dataset.to = state.segs.length;
+    if (observe && ambiguous) aiObserver.observe(p);
+    frag.append(p);
   }
-  if (!paragraphs.length) showEmpty();
+  $("#reader").append(frag);
 }
+
+// Segments are sorted by offset: first segment that ends after pos.
+function segIndexAt(pos) {
+  let lo = 0, hi = state.segs.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (state.segs[mid].e <= pos) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+// ---------------------------------------------------------------- AI reading check (paragraphs near the screen)
+const aiReadOn = () => $("#btn-ai-read").classList.contains("on");
+const ai = { pending: [], changed: 0, active: 0, failed: false, timer: 0 };
+const aiObserver = new IntersectionObserver((entries) => {
+  for (const en of entries) {
+    if (!en.isIntersecting) continue;
+    aiObserver.unobserve(en.target);
+    queueParagraph(en.target);
+  }
+}, { root: $("#main"), rootMargin: "1200px 0px" }); // check a screen or two ahead of where you read
+
+function queueParagraph(p) {
+  for (let i = +p.dataset.from; i < +p.dataset.to; i++) {
+    const seg = state.segs[i];
+    if (!seg.a || seg.queued) continue;
+    seg.queued = true;
+    const [a, b] = expandToSentences(seg.s, seg.e);
+    ai.pending.push({ id: String(i), word: seg.t, sentence: state.text.slice(a, b), options: seg.a.map((x) => x[0]) });
+  }
+  clearTimeout(ai.timer);
+  ai.timer = setTimeout(pumpReadings, 80); // gather paragraphs that appear together into one request
+}
+
+async function pumpReadings() {
+  const gen = state.gen;
+  while (ai.pending.length && ai.active < 3) {
+    const batch = ai.pending.splice(0, 40);
+    ai.active++;
+    updateStatus();
+    postJSON("/api/readings", { items: batch })
+      .then((res) => { if (gen === state.gen) for (const [id, r] of Object.entries(res.readings || {})) ai.changed += applyReading(+id, r); })
+      .catch(() => { if (gen === state.gen) ai.failed = true; })
+      .finally(() => { if (gen !== state.gen) return; ai.active--; updateStatus(); pumpReadings(); });
+  }
+}
+
+function updateStatus() {
+  let t = state.baseStatus || "";
+  if (ai.active || ai.pending.length) t += " · checking readings…";
+  else if (ai.failed) t += " · reading check failed";
+  else if (ai.changed) t += ` · AI adjusted ${ai.changed} reading${ai.changed > 1 ? "s" : ""}`;
+  setStatus(t);
+}
+
+function applyReading(i, reading) {
+  const seg = state.segs[i];
+  const alt = seg && seg.a && seg.a.find((x) => x[0] === reading);
+  if (!alt) return 0;
+  seg.pick = alt[2]; // dictionary reading, so the popup lists that entry first
+  if (alt === seg.a[0]) return 0; // the tokenizer already had it right
+  seg.r = alt[1];
+  const el = state.els[i];
+  if (el) {
+    el.innerHTML = wordHTML(seg);
+    el.classList.add("ai");
+    el.title = "Reading chosen by AI from context";
+  }
+  return 1;
+}
+
+$("#btn-ai-read").addEventListener("click", () => {
+  const on = !aiReadOn();
+  $("#btn-ai-read").classList.toggle("on", on);
+  store.set("aiRead", on);
+  if (state.text) load(state.text); // re-render: with the check, or back to the tokenizer's readings
+});
 
 function showEmpty() {
   $("#reader").innerHTML = `<div id="empty">Copy Japanese text from Apple Books and click <b>📋 Paste</b> or press <kbd>⌘V</kbd> here.</div>`;
@@ -310,25 +463,100 @@ function headwordHTML(e) {
   return kanjiRe.test(e.expression) && reading && reading !== e.expression ? `<ruby>${esc(e.expression)}<rt>${esc(reading)}</rt></ruby>` : esc(e.expression);
 }
 
+// ---------------------------------------------------------------- read aloud (macOS voices via /api/speak)
+const audioCache = new Map(); // text -> Promise<object URL>
+function audioURL(text) {
+  if (!audioCache.has(text)) {
+    const p = fetch("/api/speak?text=" + encodeURIComponent(text))
+      .then(async (r) => { if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 120)}`); return r.blob(); })
+      .then((b) => URL.createObjectURL(b));
+    p.catch(() => audioCache.delete(text));
+    audioCache.set(text, p);
+    if (audioCache.size > 60) { // forget the oldest clip
+      const [k, old] = audioCache.entries().next().value;
+      audioCache.delete(k);
+      old.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+    }
+  }
+  return audioCache.get(text);
+}
+const player = new Audio();
+let playing = null; // { text, btn }
+function stopSpeech() {
+  player.pause();
+  if (playing && playing.btn) playing.btn.classList.remove("playing");
+  playing = null;
+}
+async function speak(text, btn) {
+  if (!text) return;
+  if (playing && playing.text === text) { stopSpeech(); return; } // second press stops
+  stopSpeech();
+  playing = { text, btn };
+  if (btn) btn.classList.add("playing");
+  try {
+    const url = await audioURL(text);
+    if (!playing || playing.text !== text) return;
+    player.src = url;
+    player.playbackRate = store.get("rate", 1);
+    await player.play();
+  } catch (err) {
+    if (playing && playing.text === text) { setStatus("⚠️ Could not read aloud: " + err.message); stopSpeech(); }
+  }
+}
+player.addEventListener("ended", stopSpeech);
+
+// What to say: the reading shown in the furigana for words the AI or the dictionary disambiguated
+// (so 抱いた is read だいた, not whatever the voice guesses), the original text elsewhere for natural prosody.
+const segKana = (seg) => seg.r.map(([b, rt]) => rt || b).join("");
+function speechText(s, e) {
+  let out = "", prev = null;
+  for (let i = segIndexAt(s); i < state.segs.length && state.segs[i].s < e; i++) {
+    const seg = state.segs[i];
+    if (seg.s < s || seg.e > e) continue;
+    if (prev !== null && seg.s > prev) out += "\n";
+    out += seg.w && (seg.a || seg.pick || seg.pin) ? segKana(seg) : seg.t;
+    prev = seg.e;
+  }
+  return out.trim();
+}
+
+const RATES = [0.75, 1, 1.25];
+function setRate(r) { store.set("rate", r); $("#btn-rate").textContent = `🔊 ${r}×`; player.playbackRate = r; }
+$("#btn-rate").addEventListener("click", () => setRate(RATES[(RATES.indexOf(store.get("rate", 1)) + 1) % RATES.length]));
+
 let lookupSeq = 0;
-async function lookup(keys, anchor, titleHTML) {
+async function lookup(keys, anchor, titleHTML, conj = {}, prefer = null, sayText = "", nameWord = "", namesFirst = false) {
   const my = ++lookupSeq;
   const pop = $("#dictpop");
-  pop.innerHTML = `<div class="bar"><div class="grow"></div><button class="x" title="Close">×</button></div><div class="body"><div class="none">Looking up…</div></div>`;
+  pop.innerHTML = `<div class="bar"><div class="grow"></div>${sayText ? `<button class="say" title="Read aloud">🔊</button>` : ""}<button class="x" title="Close">×</button></div><div class="body"><div class="none">Looking up…</div></div>`;
+  pop.dataset.say = sayText;
+  if (sayText) audioURL(sayText).catch(() => {}); // prefetch so 🔊 plays at once
   pop.querySelector(".grow").innerHTML = titleHTML;
   pop.hidden = false;
   place(pop, anchor);
   const body = pop.querySelector(".body");
-  let entries;
+  let entries, names = null;
   try {
-    entries = await postJSON("/api/lookup", { keys });
+    const namesP = nameWord && kanjiRe.test(nameWord)
+      ? fetch("/api/names?word=" + encodeURIComponent(nameWord)).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      : Promise.resolve(null);
+    [entries, names] = await Promise.all([postJSON("/api/lookup", { keys }), namesP]);
   } catch (err) {
     if (my === lookupSeq) body.innerHTML = `<div class="none">⚠️ Lookup failed: ${esc(err.message)}</div>`;
     return;
   }
   if (my !== lookupSeq) return; // a newer click owns the popup
+  if (prefer) {
+    // the AI picked a reading: list that entry first within the main headword (抱く: だく before いだく)
+    const first = entries.filter((e) => e.key === keys[0]);
+    const rest = entries.filter((e) => e.key !== keys[0]);
+    first.sort((a, b) => b.readings.includes(prefer) - a.readings.includes(prefer));
+    entries = [...first, ...rest];
+  }
   body.innerHTML = "";
-  if (!entries.length) { body.innerHTML = `<div class="none">No Jitendex entry. (Shown reading comes from the tokenizer.)</div>`; return; }
+  const namesBox = names && names.names.length ? renderNames(names) : null;
+  if (namesBox && namesFirst) body.append(namesBox); // a person's name or a pinned word: names are what matter
+  if (!entries.length && !namesBox) { body.innerHTML = `<div class="none">No Jitendex entry. (Shown reading comes from the tokenizer.)</div>`; return; }
   let lastKey = keys[0];
   for (const e of entries) {
     if (e.key !== lastKey) {
@@ -337,12 +565,38 @@ async function lookup(keys, anchor, titleHTML) {
     const div = document.createElement("div");
     div.className = "entry";
     const tags = e.tags || [];
-    div.innerHTML = `<div class="hw">${headwordHTML(e)}${e.readings.length > 1 ? `<span class="alt">${e.readings.slice(1).map(esc).join("・")}</span>` : ""}<span class="tags">${tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</span></div>` +
+    div.innerHTML = `<div class="hw">${headwordHTML(e)}${e.readings.length > 1 ? `<span class="alt">${e.readings.slice(1).map(esc).join("・")}</span>` : ""}${conj[e.key] && e.key === e.expression ? `<span class="infl">(&lt; ${esc(conj[e.key])})</span>` : conj[e.key] ? `<span class="infl">(${esc(e.key)} &lt; ${esc(conj[e.key])})</span>` : ""}<span class="tags">${tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</span></div>` +
       (e.redirected ? `<div class="alt" style="margin:0">← ${esc(e.redirected)}</div>` : "");
     div.append(renderGlossary(e.glossary));
     body.append(div);
   }
+  if (namesBox && !namesFirst) body.append(namesBox);
   place(pop, anchor);
+}
+
+// "Names" section (JMnedict), with 📌 to use a reading for every occurrence of the name
+function renderNames({ word, pinned, names }) {
+  const box = document.createElement("div");
+  box.className = "names";
+  const row = (n) => `<div class="name"><b>${esc(n.reading)}</b>${n.types.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}` +
+    `<span class="gloss-en">${esc(n.gloss || "")}</span>` +
+    `<button class="pin${pinned === n.reading ? " on" : ""}" data-word="${esc(word)}" data-reading="${esc(n.reading)}" ` +
+    `title="${pinned === n.reading ? "Unpin" : `Read ${esc(word)} as ${esc(n.reading)} everywhere`}">${pinned === n.reading ? "📌 Pinned" : "📌 Use"}</button></div>`;
+  const shown = names.slice(0, 8), more = names.slice(8);
+  box.innerHTML = `<div class="also">Names · ${esc(word)}${pinned ? ` · pinned: ${esc(pinned)}` : ""}</div>` + shown.map(row).join("") +
+    (more.length ? `<details><summary>${more.length} more</summary>${more.map(row).join("")}</details>` : "");
+  return box;
+}
+
+async function setPin(word, reading) {
+  try {
+    await postJSON("/api/pins", { word, reading });
+  } catch (err) { setStatus("⚠️ Could not save the reading: " + err.message); return; }
+  const top = $("#main").scrollTop;
+  await load(state.text); // re-analyze so every occurrence (furigana and voice) uses the pin
+  $("#main").scrollTop = top;
+  state.baseStatus += reading ? ` · ${word} → ${reading}` : ` · ${word} unpinned`;
+  updateStatus();
 }
 
 function place(pop, anchor) {
@@ -391,19 +645,47 @@ function selectionOffsets() {
   if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
   const range = sel.getRangeAt(0);
   if (!$("#reader").contains(range.commonAncestorContainer)) return null;
-  let s = Infinity, e = -1;
-  for (const el of $("#reader").querySelectorAll("[data-s]")) {
-    if (sel.containsNode(el, true)) { s = Math.min(s, +el.dataset.s); e = Math.max(e, +el.dataset.e); }
+  const a = boundarySeg(range.startContainer, range.startOffset, false);
+  const b = boundarySeg(range.endContainer, range.endOffset, true);
+  let s, e;
+  if (a && b && +a.dataset.s < +b.dataset.e) {
+    s = +a.dataset.s; e = +b.dataset.e;
+  } else { // unusual selection shape (e.g. starting in an empty line): scan the spans it touches
+    s = Infinity; e = -1;
+    for (const el of $("#reader").querySelectorAll("[data-s]")) {
+      if (sel.containsNode(el, true)) { s = Math.min(s, +el.dataset.s); e = Math.max(e, +el.dataset.e); }
+    }
+    if (e < 0) return null;
   }
-  if (e < 0) return null;
   const rects = range.getClientRects();
   return { s, e, rect: rects[rects.length - 1] || range.getBoundingClientRect() };
 }
 
+// The span at one end of a selection (start: first span inside it; end: last span inside it).
+function boundarySeg(node, offset, atEnd) {
+  const segEl = (n) => (n && n.nodeType === 1 ? n : n && n.parentElement)?.closest("[data-i]");
+  const edge = (el) => el.closest("[data-i]") || (atEnd ? [...el.querySelectorAll("[data-i]")].pop() : el.querySelector("[data-i]"));
+  let el;
+  if (node.nodeType === 3) {
+    el = segEl(node);
+    if (el && atEnd && offset === 0) el = state.els[+el.dataset.i - 1] || el;               // ends just before this span
+    if (el && !atEnd && offset === node.length) el = state.els[+el.dataset.i + 1] || el;  // starts just after it
+  } else {
+    const child = node.childNodes[atEnd ? offset - 1 : offset];
+    el = child ? (child.nodeType === 1 ? edge(child) : segEl(child)) : segEl(node);
+  }
+  return el && $("#reader").contains(el) ? el : null;
+}
+
+function clearHighlight() {
+  for (const el of state.hl) el.classList.remove("hl");
+  state.hl = [];
+}
 function highlight(s, e) {
-  document.querySelectorAll("#reader .hl").forEach((x) => x.classList.remove("hl"));
-  for (const el of $("#reader").querySelectorAll("[data-s]")) {
-    if (+el.dataset.s >= s && +el.dataset.e <= e) el.classList.add("hl");
+  clearHighlight();
+  for (let i = segIndexAt(s); i < state.segs.length && state.segs[i].s < e; i++) {
+    const seg = state.segs[i], el = state.els[i];
+    if (el && seg.s >= s && seg.e <= e) { el.classList.add("hl"); state.hl.push(el); }
   }
 }
 
@@ -411,7 +693,8 @@ $("#reader").addEventListener("mouseup", () => setTimeout(() => {
   const o = selectionOffsets();
   if (!o) return;
   const [s, e] = expandToSentences(o.s, o.e);
-  state.sel = { s, e, text: state.text.slice(s, e), rect: o.rect };
+  state.sel = { s, e, text: state.text.slice(s, e), rect: o.rect, say: speechText(s, e) };
+  audioURL(state.sel.say).catch(() => {}); // prefetch, so 🔊 Read starts without the ~1.5 s synthesis wait
   const bar = $("#selbar");
   bar.hidden = false;
   const r = o.rect;
@@ -433,16 +716,20 @@ $("#reader").addEventListener("click", (ev) => {
   closeAll();
   w.classList.add("active");
   const title = `<div class="hw" style="font-size:20px;font-weight:700;line-height:1.9">${seg.r.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt style="font-size:11px;color:var(--muted)">${esc(rt)}</rt></ruby>` : esc(b))).join("")}</div>`;
-  lookup(seg.k && seg.k.length ? seg.k : [seg.t], w, title);
+  lookup(seg.k && seg.k.length ? seg.k : [seg.t], w, title, seg.c || {}, seg.pick || null, segKana(seg), seg.t, !!(seg.nm || seg.pin));
 });
 
 $("#dictpop").addEventListener("click", (ev) => {
   if (ev.target.closest(".x")) { closeAll(); return; }
+  const sayBtn = ev.target.closest(".say");
+  if (sayBtn) { speak($("#dictpop").dataset.say, sayBtn); return; }
+  const pin = ev.target.closest(".pin");
+  if (pin) { setPin(pin.dataset.word, pin.classList.contains("on") ? null : pin.dataset.reading); return; }
   const a = ev.target.closest("a.q");
   if (a && a.dataset.query) {
     ev.preventDefault();
     const anchor = document.querySelector(".w.active") || $("#dictpop").getBoundingClientRect();
-    lookup([a.dataset.query], anchor, `<div style="font-size:20px;font-weight:700">${esc(a.dataset.query)}</div>`);
+    lookup([a.dataset.query], anchor, `<div style="font-size:20px;font-weight:700">${esc(a.dataset.query)}</div>`, {}, null, a.dataset.query);
   }
 });
 
@@ -490,7 +777,7 @@ async function translateSelection() {
   window.getSelection().removeAllRanges();
   highlight(sel.s, sel.e);
   const pop = $("#trpop");
-  pop.innerHTML = `<div class="bar"><div class="grow src"></div><button class="btn icon" id="tr-chat" title="Discuss in chat">💬</button><button class="x" title="Close">×</button></div><div class="body md cursor"></div>`;
+  pop.innerHTML = `<div class="bar"><div class="grow src"></div><button class="say" id="tr-say" title="Read the sentence aloud">🔊</button><button class="btn icon" id="tr-chat" title="Discuss in chat">💬</button><button class="x" title="Close">×</button></div><div class="body md cursor"></div>`;
   pop.querySelector(".src").textContent = sel.text.length > 80 ? sel.text.slice(0, 80) + "…" : sel.text;
   pop.hidden = false;
   $("#dictpop").hidden = true;
@@ -506,11 +793,18 @@ async function translateSelection() {
   } catch (err) { done("⚠️ " + err); }
 }
 $("#trpop").addEventListener("click", (ev) => {
-  if (ev.target.closest(".x")) { closeAll(); document.querySelectorAll("#reader .hl").forEach((x) => x.classList.remove("hl")); }
+  if (ev.target.closest(".x")) { closeAll(); clearHighlight(); }
+  const sayBtn = ev.target.closest("#tr-say");
+  if (sayBtn && state.sel) speak(state.sel.say, sayBtn);
   if (ev.target.closest("#tr-chat") && state.sel) {
     const tr = state.trCache.get(state.sel.text);
     askAbout(state.sel.text, tr);
   }
+});
+$("#sel-say").addEventListener("click", (ev) => {
+  if (!state.sel) return;
+  highlight(state.sel.s, state.sel.e);
+  speak(state.sel.say, ev.currentTarget);
 });
 $("#sel-ask").addEventListener("click", () => { if (state.sel) { highlight(state.sel.s, state.sel.e); askAbout(state.sel.text); } $("#selbar").hidden = true; window.getSelection().removeAllRanges(); });
 
@@ -591,6 +885,8 @@ $("#btn-edit").addEventListener("click", () => ($("#editor").hidden ? showEditor
 $("#btn-read").addEventListener("click", () => load($("#input").value));
 $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) load($("#input").value); });
 
+$("#btn-ai-read").classList.toggle("on", store.get("aiRead", true));
+setRate(store.get("rate", 1));
 function setFuri(on) { document.body.classList.toggle("no-furi", !on); $("#btn-furi").classList.toggle("on", on); store.set("furi", on); }
 $("#btn-furi").addEventListener("click", () => setFuri(document.body.classList.contains("no-furi")));
 function setSize(px) { px = Math.max(14, Math.min(40, px)); document.documentElement.style.setProperty("--fs", px + "px"); store.set("fs", px); }
@@ -618,15 +914,15 @@ $("#btn-paste").addEventListener("click", async () => {
   }
 });
 $("#btn-clear-text").addEventListener("click", () => {
-  closeAll();
-  state.text = ""; state.segs = []; state.sel = null;
+  resetReader();
+  state.text = ""; state.baseStatus = "";
   store.set("text", "");
   $("#input").value = "";
   showReader();
   showEmpty();
   setStatus("");
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeAll(); document.querySelectorAll("#reader .hl").forEach((x) => x.classList.remove("hl")); } });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeAll(); clearHighlight(); } });
 document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".pop, #selbar, #reader .w, #sidebar")) { $("#dictpop").hidden = true; $("#trpop").hidden = true; document.querySelectorAll(".w.active").forEach((x) => x.classList.remove("active")); }
   if (!e.target.closest("#selbar")) $("#selbar").hidden = true;
@@ -642,7 +938,11 @@ $("#main").addEventListener("scroll", () => {
   setFuri(store.get("furi", true));
   setSize(store.get("fs", 22));
   if (store.get("chat", false)) openChat(true);
-  fetch("/api/config").then((r) => r.json()).then((c) => { $("#model").textContent = c.model + (c.has_key ? "" : " · no API key"); }).catch(() => { $("#model").textContent = "server offline?"; });
+  try {
+    const c = await (await fetch("/api/config")).json();
+    state.hasKey = c.has_key;
+    $("#model").textContent = c.model + (c.has_key ? "" : " · no API key");
+  } catch { $("#model").textContent = "server offline?"; }
   const saved = store.get("text", "");
   if (saved) load(saved); else showEmpty();
 })();
