@@ -16,3 +16,8 @@ migaku-supplement/*.zip
 .DS_Store
 __pycache__/
 *.pyc
+
+# Reader app: local venv, built dictionary, API key
+reader/.venv/
+reader/data/
+reader/.env

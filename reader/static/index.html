@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Japanese Reader</title>
+<link rel="stylesheet" href="/jitendex.css">
+<style>
+:root {
+  --bg: #fbfaf7;
+  --panel: #ffffff;
+  --ink: #1f1d2b;
+  --muted: #6e6a7c;
+  --line: #e7e3ee;
+  --accent: #5b3fd1;
+  --accent-soft: #efeafd;
+  --hover: #f1edfb;
+  --hl: #dfeafc;
+  --phrase: #c9a227;
+  --shadow: 0 12px 40px rgba(40, 30, 80, .16), 0 2px 8px rgba(40, 30, 80, .08);
+  --fs: 22px;
+  --jp: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161c; --panel: #211f29; --ink: #ebe8f3; --muted: #9a95ab; --line: #34303f;
+    --accent: #a993ff; --accent-soft: #2e2747; --hover: #2a2538; --hl: #233250; --phrase: #d9b648;
+    --shadow: 0 12px 40px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.3);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font-family: var(--jp); display: flex; flex-direction: column; }
+button { font: inherit; color: inherit; cursor: pointer; }
+
+/* ---------- top bar ---------- */
+header { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
+header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 700; letter-spacing: .02em; }
+header .spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.btn.icon { padding: 6px 10px; }
+#status { font-size: 13px; color: var(--muted); }
+
+/* ---------- layout ---------- */
+#layout { flex: 1; display: flex; min-height: 0; }
+#main { flex: 1; overflow-y: auto; position: relative; }
+#sidebar { width: 400px; flex: none; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+body.chat-hidden #sidebar { display: none; }
+
+/* ---------- editor ---------- */
+#editor { max-width: 52em; margin: 32px auto; padding: 0 24px; }
+#editor textarea { width: 100%; min-height: 60vh; font-family: var(--jp); font-size: 17px; line-height: 1.8; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); resize: vertical; }
+#editor .row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; color: var(--muted); font-size: 14px; }
+
+/* ---------- reading view ---------- */
+#reader { max-width: 46em; margin: 0 auto; padding: 36px 32px 120px; font-size: var(--fs); line-height: 2.5; }
+#reader p { margin: 0 0 .2em; min-height: 1em; }
+#reader p.blank { min-height: .8em; line-height: .8; }
+#reader rt { font-size: .48em; color: var(--muted); user-select: none; -webkit-user-select: none; letter-spacing: 0; }
+body.no-furi #reader rt { visibility: hidden; }
+.w { cursor: pointer; border-radius: 4px; transition: background .08s; }
+.w:hover { background: var(--hover); }
+.w.p { text-decoration: underline dotted var(--phrase); text-underline-offset: .32em; text-decoration-thickness: 2px; }
+.w.active { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+.hl { background: var(--hl); }
+.w.hl:hover { background: var(--hover); }
+#empty { color: var(--muted); text-align: center; margin-top: 18vh; font-size: 16px; line-height: 2; }
+#empty kbd { border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; background: var(--panel); font-family: inherit; }
+
+/* ---------- popups ---------- */
+.pop { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); width: min(540px, calc(100vw - 32px)); max-height: 62vh; overflow-y: auto; font-size: 15px; line-height: 1.55; }
+.pop[hidden] { display: none; }
+.pop .bar { position: sticky; top: 0; background: var(--panel); display: flex; align-items: center; gap: 8px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); z-index: 1; }
+.pop .bar .grow { flex: 1; min-width: 0; }
+.pop .x { border: none; background: none; font-size: 20px; color: var(--muted); padding: 0 4px; line-height: 1; }
+.pop .body { padding: 6px 16px 16px; }
+
+.entry { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.entry:last-child { border-bottom: none; }
+.entry .hw { font-size: 24px; font-weight: 700; line-height: 1.9; }
+.entry .hw rt { font-size: 12px; font-weight: 500; color: var(--muted); }
+.entry .alt { font-size: 14px; color: var(--muted); margin-left: 8px; font-weight: 400; }
+.entry .tags { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: middle; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600; white-space: nowrap; }
+.also { font-size: 12px; font-weight: 700; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; margin-top: 14px; }
+.gloss { margin-top: 4px; }
+.gloss ul, .gloss ol { padding-left: 1.3em; margin: .2em 0; }
+.gloss a.q { color: var(--accent); }
+.gloss [data-sc-content="attribution"] { font-size: 11px; opacity: .55; }
+.gloss [data-sc-content="example-sentence"] { font-size: 14px; }
+.gloss table { border-collapse: collapse; font-size: 13px; }
+.gloss td, .gloss th { border: 1px solid var(--line); padding: 2px 6px; }
+.none { color: var(--muted); padding: 14px 0; }
+
+/* selection toolbar */
+#selbar { position: absolute; z-index: 25; display: flex; gap: 4px; background: var(--ink); border-radius: 999px; padding: 4px; box-shadow: var(--shadow); }
+#selbar[hidden] { display: none; }
+#selbar button { border: none; background: none; color: var(--bg); padding: 6px 14px; border-radius: 999px; font-size: 14px; }
+#selbar button:hover { background: rgba(255,255,255,.15); }
+
+/* translation */
+#trpop .src { color: var(--muted); font-size: 14px; }
+.md { font-size: 15px; line-height: 1.75; }
+.md p { margin: .3em 0 .6em; }
+.md ul { padding-left: 1.2em; margin: .2em 0 .6em; }
+.md li { margin: .15em 0; }
+.md h4 { margin: .6em 0 .2em; font-size: 15px; }
+.md code { background: var(--hover); padding: 0 4px; border-radius: 4px; }
+.md .notes-h { font-weight: 700; margin-top: .8em; }
+.cursor::after { content: "▍"; animation: blink 1s steps(2) infinite; color: var(--accent); }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- chat ---------- */
+#chat-head { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+#chat-head b { flex: 1; font-size: 15px; }
+#chat-head .model { font-size: 12px; color: var(--muted); }
+#msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 92%; padding: 10px 14px; border-radius: 14px; font-size: 15px; line-height: 1.7; word-wrap: break-word; }
+.msg.user { align-self: flex-end; background: var(--accent); color: #fff; white-space: pre-wrap; border-bottom-right-radius: 4px; }
+.msg.assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.assistant.md p:first-child { margin-top: 0; }
+#chat-empty { color: var(--muted); font-size: 14px; line-height: 1.8; }
+#chat-form { border-top: 1px solid var(--line); padding: 12px; display: flex; gap: 8px; align-items: flex-end; }
+#chat-form button:disabled { opacity: .5; cursor: default; }
+#chat-input { flex: 1; resize: none; font: inherit; font-size: 15px; line-height: 1.5; border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; background: var(--bg); color: var(--ink); max-height: 180px; }
+#chat-input:focus, #editor textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+@media (max-width: 860px) {
+  #sidebar { position: fixed; inset: 56px 0 0 auto; width: min(400px, 100vw); z-index: 30; box-shadow: var(--shadow); }
+  #reader { padding: 24px 16px 100px; }
+  #editor { padding: 0 16px; }
+}
+</style>
+</head>
+<body class="chat-hidden">
+<header>
+  <h1>読む</h1>
+  <button class="btn" id="btn-paste" title="Replace the text with the clipboard (or press ⌘V)">📋 Paste</button>
+  <button class="btn" id="btn-edit" title="Edit the text">✎ Edit</button>
+  <button class="btn" id="btn-clear-text" title="Clear the text">🗑 Clear</button>
+  <button class="btn on" id="btn-furi" title="Toggle furigana">ふりがな</button>
+  <button class="btn icon" id="btn-smaller" title="Smaller text">A−</button>
+  <button class="btn icon" id="btn-bigger" title="Larger text">A+</button>
+  <span id="status"></span>
+  <span class="spacer"></span>
+  <button class="btn" id="btn-chat" title="Toggle chat sidebar">💬 Chat</button>
+</header>
+
+<div id="layout">
+  <main id="main">
+    <section id="editor" hidden>
+      <textarea id="input" placeholder="Paste Japanese text here (e.g. copied from Apple Books)…"></textarea>
+      <div class="row">
+        <span>Tip: in reading mode you can also just press ⌘V to replace the text.</span>
+        <button class="btn primary" id="btn-read">Read →</button>
+      </div>
+    </section>
+    <article id="reader"></article>
+  </main>
+
+  <aside id="sidebar">
+    <div id="chat-head">
+      <b>Discuss this text</b>
+      <span class="model" id="model"></span>
+      <button class="btn icon" id="btn-clear" title="Clear conversation">Clear</button>
+    </div>
+    <div id="msgs"><div id="chat-empty">Ask anything about the text: a word's nuance, why a grammar form is used, who a character is, how to translate a line… The whole pasted text is sent along as context.</div></div>
+    <form id="chat-form">
+      <textarea id="chat-input" rows="2" placeholder="Ask about the text…  (Enter to send, Shift+Enter for newline)"></textarea>
+      <button class="btn primary" type="submit">Send</button>
+    </form>
+  </aside>
+</div>
+
+<div id="dictpop" class="pop" hidden></div>
+<div id="trpop" class="pop" hidden></div>
+<div id="selbar" hidden>
+  <button id="sel-tr">译 Translate</button>
+  <button id="sel-ask">💬 Ask</button>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("jr." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("jr." + k, JSON.stringify(v)); } catch {} },
+};
+
+const state = { text: "", segs: [], chat: [], trCache: new Map(), sel: null, busy: false };
+
+// ---------------------------------------------------------------- text loading
+function cleanPaste(t) {
+  t = t.replace(/\r\n?/g, "\n");
+  // Apple Books appends an attribution block ("Excerpt From …" / "抜粋 …"); cut it off.
+  const m = t.match(/\n\s*(Excerpt From|抜粋)[\s\S]*$/);
+  if (m && m.index > 0) t = t.slice(0, m.index);
+  t = t.replace(/^\s+|\s+$/g, "");
+  if (/^[“"]/.test(t) && /[”"]$/.test(t)) t = t.slice(1, -1).trim();
+  return t;
+}
+
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+  return r.json();
+}
+
+async function load(text) {
+  text = cleanPaste(text);
+  if (!text) return;
+  setStatus("Analyzing…");
+  let data;
+  try {
+    data = await postJSON("/api/analyze", { text });
+  } catch (err) {
+    setStatus("⚠️ Could not analyze the text: " + err.message);
+    return;
+  }
+  state.text = data.text;
+  store.set("text", state.text);
+  renderReader(data.paragraphs);
+  showReader();
+  setStatus(`${state.text.replace(/\s/g, "").length.toLocaleString()} characters`);
+}
+
+function renderReader(paragraphs) {
+  const root = $("#reader");
+  root.innerHTML = "";
+  state.segs = [];
+  closeAll();
+  for (const para of paragraphs) {
+    const p = document.createElement("p");
+    if (!para.length || para.every((s) => !s.t.trim())) p.className = "blank";
+    let html = "";
+    for (const s of para) {
+      const i = state.segs.push(s) - 1;
+      if (s.w) {
+        const inner = s.r.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt>${esc(rt)}</rt></ruby>` : esc(b))).join("");
+        html += `<span class="w${s.p ? " p" : ""}" data-i="${i}" data-s="${s.s}" data-e="${s.e}">${inner}</span>`;
+      } else {
+        html += `<span data-i="${i}" data-s="${s.s}" data-e="${s.e}">${esc(s.t)}</span>`;
+      }
+    }
+    p.innerHTML = html;
+    root.append(p);
+  }
+  if (!paragraphs.length) showEmpty();
+}
+
+function showEmpty() {
+  $("#reader").innerHTML = `<div id="empty">Copy Japanese text from Apple Books and click <b>📋 Paste</b> or press <kbd>⌘V</kbd> here.</div>`;
+}
+
+function showReader() { $("#editor").hidden = true; $("#reader").hidden = false; $("#btn-edit").classList.remove("on"); }
+function showEditor() {
+  closeAll();
+  $("#input").value = state.text;
+  $("#editor").hidden = false; $("#reader").hidden = true; $("#btn-edit").classList.add("on");
+  $("#input").focus();
+}
+function setStatus(t) { $("#status").textContent = t; }
+
+// ---------------------------------------------------------------- structured content (Yomitan format)
+const SC_TAGS = new Set(["br", "ruby", "rt", "rp", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "div", "span", "ol", "ul", "li", "details", "summary", "a"]);
+function sc(node) {
+  if (node == null) return document.createTextNode("");
+  if (typeof node === "string") return document.createTextNode(node);
+  if (Array.isArray(node)) { const f = document.createDocumentFragment(); node.forEach((n) => f.append(sc(n))); return f; }
+  if (node.type === "structured-content") return sc(node.content);
+  if (node.type === "text") return document.createTextNode(node.text || "");
+  if (!node.tag || !SC_TAGS.has(node.tag)) return document.createTextNode("");
+  const el = document.createElement(node.tag);
+  if (node.title) el.title = node.title;
+  if (node.lang) el.lang = node.lang;
+  if (node.colSpan) el.colSpan = node.colSpan;
+  if (node.rowSpan) el.rowSpan = node.rowSpan;
+  if (node.style) for (const [k, v] of Object.entries(node.style)) { try { el.style[k] = typeof v === "number" ? v + "em" : v; } catch {} }
+  if (node.data) for (const [k, v] of Object.entries(node.data)) { try { el.setAttribute("data-sc-" + k, v); } catch {} }
+  if (node.tag === "a" && node.href) {
+    if (node.href.startsWith("?")) {
+      const q = new URLSearchParams(node.href.slice(1)).get("query");
+      el.href = "#"; el.className = "q"; if (q) el.dataset.query = q;
+    } else { el.href = node.href; el.target = "_blank"; el.rel = "noopener"; }
+  }
+  el.append(sc(node.content));
+  return el;
+}
+function renderGlossary(glossary) {
+  const box = document.createElement("div");
+  box.className = "gloss";
+  const plain = [];
+  for (const g of glossary) {
+    if (Array.isArray(g)) continue; // deinflection marker
+    if (typeof g === "string") plain.push(g);
+    else box.append(sc(g));
+  }
+  if (plain.length) { const ul = document.createElement("ul"); plain.forEach((t) => { const li = document.createElement("li"); li.textContent = t; ul.append(li); }); box.append(ul); }
+  return box;
+}
+
+// ---------------------------------------------------------------- dictionary popup
+const kanjiRe = /[㐀-鿿豈-﫿々〆ヶ]/;
+function headwordHTML(e) {
+  if (e.ruby) return e.ruby.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt>${esc(rt)}</rt></ruby>` : esc(b))).join("");
+  const reading = e.readings[0];
+  return kanjiRe.test(e.expression) && reading && reading !== e.expression ? `<ruby>${esc(e.expression)}<rt>${esc(reading)}</rt></ruby>` : esc(e.expression);
+}
+
+let lookupSeq = 0;
+async function lookup(keys, anchor, titleHTML) {
+  const my = ++lookupSeq;
+  const pop = $("#dictpop");
+  pop.innerHTML = `<div class="bar"><div class="grow"></div><button class="x" title="Close">×</button></div><div class="body"><div class="none">Looking up…</div></div>`;
+  pop.querySelector(".grow").innerHTML = titleHTML;
+  pop.hidden = false;
+  place(pop, anchor);
+  const body = pop.querySelector(".body");
+  let entries;
+  try {
+    entries = await postJSON("/api/lookup", { keys });
+  } catch (err) {
+    if (my === lookupSeq) body.innerHTML = `<div class="none">⚠️ Lookup failed: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (my !== lookupSeq) return; // a newer click owns the popup
+  body.innerHTML = "";
+  if (!entries.length) { body.innerHTML = `<div class="none">No Jitendex entry. (Shown reading comes from the tokenizer.)</div>`; return; }
+  let lastKey = keys[0];
+  for (const e of entries) {
+    if (e.key !== lastKey) {
+      const h = document.createElement("div"); h.className = "also"; h.textContent = "Also: " + e.key; body.append(h); lastKey = e.key;
+    }
+    const div = document.createElement("div");
+    div.className = "entry";
+    const tags = e.tags || [];
+    div.innerHTML = `<div class="hw">${headwordHTML(e)}${e.readings.length > 1 ? `<span class="alt">${e.readings.slice(1).map(esc).join("・")}</span>` : ""}<span class="tags">${tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</span></div>` +
+      (e.redirected ? `<div class="alt" style="margin:0">← ${esc(e.redirected)}</div>` : "");
+    div.append(renderGlossary(e.glossary));
+    body.append(div);
+  }
+  place(pop, anchor);
+}
+
+function place(pop, anchor) {
+  const rect = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : anchor;
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  let left = Math.min(Math.max(16, rect.left), vw - pw - 16);
+  let top = rect.bottom + 8;
+  if (top + ph > vh - 12 && rect.top - ph - 8 > 12) top = rect.top - ph - 8;
+  top = Math.max(12, Math.min(top, vh - ph - 12));
+  pop.style.left = left + window.scrollX + "px";
+  pop.style.top = top + window.scrollY + "px";
+}
+
+function closeAll() {
+  $("#dictpop").hidden = true; $("#trpop").hidden = true; $("#selbar").hidden = true;
+  document.querySelectorAll(".w.active").forEach((e) => e.classList.remove("active"));
+}
+
+// ---------------------------------------------------------------- selection → sentences
+const ENDERS = "。！？!?…";
+const CLOSERS = "」』）)】”’";
+function expandToSentences(s, e) {
+  const t = state.text;
+  let a = s;
+  while (a > 0) {
+    const c = t[a - 1];
+    if (c === "\n") break;
+    if (ENDERS.includes(c) && !ENDERS.includes(t[a])) break;
+    if (CLOSERS.includes(c) && a >= 2 && ENDERS.includes(t[a - 2])) break;
+    a--;
+  }
+  while (a < e && /\s/.test(t[a])) a++;
+  let b = e;
+  // if selection already ends right after a sentence end, keep it
+  if (!(b > 0 && (ENDERS.includes(t[b - 1]) || CLOSERS.includes(t[b - 1])))) {
+    while (b < t.length && t[b] !== "\n" && !ENDERS.includes(t[b])) b++;
+  }
+  while (b < t.length && ENDERS.includes(t[b])) b++;
+  while (b < t.length && CLOSERS.includes(t[b])) b++;
+  return [a, b];
+}
+
+function selectionOffsets() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  if (!$("#reader").contains(range.commonAncestorContainer)) return null;
+  let s = Infinity, e = -1;
+  for (const el of $("#reader").querySelectorAll("[data-s]")) {
+    if (sel.containsNode(el, true)) { s = Math.min(s, +el.dataset.s); e = Math.max(e, +el.dataset.e); }
+  }
+  if (e < 0) return null;
+  const rects = range.getClientRects();
+  return { s, e, rect: rects[rects.length - 1] || range.getBoundingClientRect() };
+}
+
+function highlight(s, e) {
+  document.querySelectorAll("#reader .hl").forEach((x) => x.classList.remove("hl"));
+  for (const el of $("#reader").querySelectorAll("[data-s]")) {
+    if (+el.dataset.s >= s && +el.dataset.e <= e) el.classList.add("hl");
+  }
+}
+
+$("#reader").addEventListener("mouseup", () => setTimeout(() => {
+  const o = selectionOffsets();
+  if (!o) return;
+  const [s, e] = expandToSentences(o.s, o.e);
+  state.sel = { s, e, text: state.text.slice(s, e), rect: o.rect };
+  const bar = $("#selbar");
+  bar.hidden = false;
+  const r = o.rect;
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  const bw = bar.offsetWidth, bh = bar.offsetHeight;
+  const left = Math.max(8, Math.min(r.right - bw / 2, vw - bw - 8));
+  let top = r.bottom + 8;
+  if (top + bh > vh - 8) top = Math.max(8, r.top - bh - 8); // flip above the selection
+  bar.style.left = left + window.scrollX + "px";
+  bar.style.top = top + window.scrollY + "px";
+}, 0));
+
+$("#reader").addEventListener("click", (ev) => {
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return;
+  const w = ev.target.closest(".w");
+  if (!w) { closeAll(); return; }
+  const seg = state.segs[+w.dataset.i];
+  closeAll();
+  w.classList.add("active");
+  const title = `<div class="hw" style="font-size:20px;font-weight:700;line-height:1.9">${seg.r.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt style="font-size:11px;color:var(--muted)">${esc(rt)}</rt></ruby>` : esc(b))).join("")}</div>`;
+  lookup(seg.k && seg.k.length ? seg.k : [seg.t], w, title);
+});
+
+$("#dictpop").addEventListener("click", (ev) => {
+  if (ev.target.closest(".x")) { closeAll(); return; }
+  const a = ev.target.closest("a.q");
+  if (a && a.dataset.query) {
+    ev.preventDefault();
+    const anchor = document.querySelector(".w.active") || $("#dictpop").getBoundingClientRect();
+    lookup([a.dataset.query], anchor, `<div style="font-size:20px;font-weight:700">${esc(a.dataset.query)}</div>`);
+  }
+});
+
+// ---------------------------------------------------------------- streaming helper + markdown
+async function streamPost(url, body, onText) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 300)}`);
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let all = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    all += dec.decode(value, { stream: true });
+    onText(all);
+  }
+  return all;
+}
+
+function md(src) {
+  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  const out = [];
+  let list = null, para = [];
+  const flushP = () => { if (para.length) { out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; } };
+  const flushL = () => { if (list) { out.push(`<ul>${list.map((x) => `<li>${inline(x)}</li>`).join("")}</ul>`); list = null; } };
+  for (const raw of src.split("\n")) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { flushP(); flushL(); continue; }
+    if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) { flushP(); (list ||= []).push(m[1]); continue; }
+    if ((m = line.match(/^#{1,6}\s+(.*)$/))) { flushP(); flushL(); out.push(`<h4>${inline(m[1])}</h4>`); continue; }
+    if (/^\s*Notes\s*[:：]\s*$/i.test(line)) { flushP(); flushL(); out.push(`<div class="notes-h">Notes:</div>`); continue; }
+    flushL(); para.push(line);
+  }
+  flushP(); flushL();
+  return out.join("");
+}
+
+// ---------------------------------------------------------------- translation
+$("#sel-tr").addEventListener("click", () => translateSelection());
+async function translateSelection() {
+  const sel = state.sel;
+  if (!sel) return;
+  $("#selbar").hidden = true;
+  window.getSelection().removeAllRanges();
+  highlight(sel.s, sel.e);
+  const pop = $("#trpop");
+  pop.innerHTML = `<div class="bar"><div class="grow src"></div><button class="btn icon" id="tr-chat" title="Discuss in chat">💬</button><button class="x" title="Close">×</button></div><div class="body md cursor"></div>`;
+  pop.querySelector(".src").textContent = sel.text.length > 80 ? sel.text.slice(0, 80) + "…" : sel.text;
+  pop.hidden = false;
+  $("#dictpop").hidden = true;
+  place(pop, sel.rect);
+  const body = pop.querySelector(".body");
+  const done = (txt) => { body.innerHTML = md(txt); body.classList.remove("cursor"); place(pop, sel.rect); };
+  if (state.trCache.has(sel.text)) return done(state.trCache.get(sel.text));
+  const context = state.text.slice(Math.max(0, sel.s - 600), Math.min(state.text.length, sel.e + 300));
+  try {
+    const full = await streamPost("/api/translate", { selection: sel.text, context }, (t) => { body.innerHTML = md(t); });
+    if (!full.startsWith("⚠️")) state.trCache.set(sel.text, full);
+    done(full);
+  } catch (err) { done("⚠️ " + err); }
+}
+$("#trpop").addEventListener("click", (ev) => {
+  if (ev.target.closest(".x")) { closeAll(); document.querySelectorAll("#reader .hl").forEach((x) => x.classList.remove("hl")); }
+  if (ev.target.closest("#tr-chat") && state.sel) {
+    const tr = state.trCache.get(state.sel.text);
+    askAbout(state.sel.text, tr);
+  }
+});
+$("#sel-ask").addEventListener("click", () => { if (state.sel) { highlight(state.sel.s, state.sel.e); askAbout(state.sel.text); } $("#selbar").hidden = true; window.getSelection().removeAllRanges(); });
+
+// ---------------------------------------------------------------- chat
+function askAbout(sentence, translation) {
+  openChat(true);
+  if (translation && !state.chat.some((m) => m.ctx === sentence)) {
+    // put the sentence + translation into the conversation so follow-ups can refer to it
+    state.chat.push({ role: "user", content: `请翻译并讲解：「${sentence}」`, ctx: sentence, hidden: true });
+    state.chat.push({ role: "assistant", content: translation, ctx: sentence });
+    renderChat();
+  }
+  const inp = $("#chat-input");
+  inp.value = `「${sentence}」\n`;
+  inp.focus();
+  inp.setSelectionRange(inp.value.length, inp.value.length);
+  autosize();
+}
+
+function renderChat() {
+  const box = $("#msgs");
+  box.innerHTML = "";
+  if (!state.chat.length) { box.innerHTML = `<div id="chat-empty">Ask anything about the text: a word's nuance, why a grammar form is used, who a character is, how to translate a line… The whole pasted text is sent along as context.</div>`; return; }
+  for (const m of state.chat) {
+    if (m.hidden) continue;
+    const d = document.createElement("div");
+    d.className = "msg " + m.role + (m.role === "assistant" ? " md" : "");
+    if (m.role === "assistant") d.innerHTML = md(m.content); else d.textContent = m.content;
+    box.append(d);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendChat(text) {
+  if (state.busy || !text.trim()) return;
+  state.busy = true;
+  $("#chat-form button").disabled = true;
+  state.chat.push({ role: "user", content: text.trim() });
+  renderChat();
+  const box = $("#msgs");
+  const d = document.createElement("div");
+  d.className = "msg assistant md cursor";
+  box.append(d);
+  const stick = () => { box.scrollTop = box.scrollHeight; };
+  try {
+    const msgs = state.chat.map(({ role, content }) => ({ role, content }));
+    const full = await streamPost("/api/chat", { text: state.text, messages: msgs }, (t) => { d.innerHTML = md(t); stick(); });
+    state.chat.push({ role: "assistant", content: full });
+  } catch (err) {
+    state.chat.push({ role: "assistant", content: "⚠️ " + err });
+  }
+  state.busy = false;
+  $("#chat-form button").disabled = false;
+  renderChat();
+}
+
+function autosize() { const t = $("#chat-input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; }
+$("#chat-input").addEventListener("input", autosize);
+$("#chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); $("#chat-form").requestSubmit(); }
+});
+$("#chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (state.busy) return; // keep the draft; Send is disabled until the reply finishes
+  const v = $("#chat-input").value; $("#chat-input").value = ""; autosize(); sendChat(v);
+});
+$("#btn-clear").addEventListener("click", () => { state.chat = []; renderChat(); });
+
+function openChat(force) {
+  const hidden = document.body.classList.toggle("chat-hidden", force === undefined ? undefined : !force);
+  $("#btn-chat").classList.toggle("on", !hidden);
+  store.set("chat", !hidden);
+}
+$("#btn-chat").addEventListener("click", () => openChat());
+
+// ---------------------------------------------------------------- toolbar, paste, keys
+$("#btn-edit").addEventListener("click", () => ($("#editor").hidden ? showEditor() : load($("#input").value)));
+$("#btn-read").addEventListener("click", () => load($("#input").value));
+$("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) load($("#input").value); });
+
+function setFuri(on) { document.body.classList.toggle("no-furi", !on); $("#btn-furi").classList.toggle("on", on); store.set("furi", on); }
+$("#btn-furi").addEventListener("click", () => setFuri(document.body.classList.contains("no-furi")));
+function setSize(px) { px = Math.max(14, Math.min(40, px)); document.documentElement.style.setProperty("--fs", px + "px"); store.set("fs", px); }
+$("#btn-smaller").addEventListener("click", () => setSize(store.get("fs", 22) - 2));
+$("#btn-bigger").addEventListener("click", () => setSize(store.get("fs", 22) + 2));
+
+function pasteText(t) {
+  if (!t || !t.trim()) { setStatus("The clipboard has no text."); return; }
+  if (state.chat.length && t.trim() !== state.text) { state.chat = []; renderChat(); } // new text, new conversation
+  load(t);
+}
+document.addEventListener("paste", (e) => {
+  if (e.target.closest && e.target.closest("textarea, input")) return;
+  const t = e.clipboardData.getData("text/plain");
+  if (t.trim()) { e.preventDefault(); pasteText(t); }
+});
+$("#btn-paste").addEventListener("click", async () => {
+  try {
+    pasteText(await navigator.clipboard.readText());
+  } catch {
+    // clipboard access denied or unsupported: fall back to the editor so ⌘V still works
+    showEditor();
+    $("#input").value = "";
+    setStatus("Clipboard access was blocked. Press ⌘V in the box, then Read →");
+  }
+});
+$("#btn-clear-text").addEventListener("click", () => {
+  closeAll();
+  state.text = ""; state.segs = []; state.sel = null;
+  store.set("text", "");
+  $("#input").value = "";
+  showReader();
+  showEmpty();
+  setStatus("");
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeAll(); document.querySelectorAll("#reader .hl").forEach((x) => x.classList.remove("hl")); } });
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest(".pop, #selbar, #reader .w, #sidebar")) { $("#dictpop").hidden = true; $("#trpop").hidden = true; document.querySelectorAll(".w.active").forEach((x) => x.classList.remove("active")); }
+  if (!e.target.closest("#selbar")) $("#selbar").hidden = true;
+});
+window.addEventListener("resize", () => { $("#selbar").hidden = true; });
+$("#main").addEventListener("scroll", () => {
+  $("#selbar").hidden = true; $("#dictpop").hidden = true; $("#trpop").hidden = true;
+  document.querySelectorAll(".w.active").forEach((x) => x.classList.remove("active"));
+}, { passive: true });
+
+// ---------------------------------------------------------------- init
+(async function init() {
+  setFuri(store.get("furi", true));
+  setSize(store.get("fs", 22));
+  if (store.get("chat", false)) openChat(true);
+  fetch("/api/config").then((r) => r.json()).then((c) => { $("#model").textContent = c.model + (c.has_key ? "" : " · no API key"); }).catch(() => { $("#model").textContent = "server offline?"; });
+  const saved = store.get("text", "");
+  if (saved) load(saved); else showEmpty();
+})();
+</script>
+</body>
+</html>
