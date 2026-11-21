@@ -5,15 +5,26 @@ simplified-Chinese translation with notes. Discuss the text with an LLM (GLM-5.3
 
 ## Setup
 
+**1. Download the two dictionaries to the repo root** (the folder above `reader/`). Both are gitignored.
+
+| File | What | Where |
+|---|---|---|
+| `jitendex-yomitan.zip` | Jitendex, the word dictionary (required) | the **Yomitan** version from https://jitendex.org |
+| `JMnedict.xml.gz` | JMnedict, the names dictionary for the popup's Names section (optional but recommended) | `curl -O http://ftp.edrdg.org/pub/Nihongo/JMnedict.xml.gz` (12 MB) |
+
+**2. Install and start:**
+
 ```sh
 cd reader
 uv venv --python 3.13 .venv          # fugashi has no Python 3.15 wheel yet
 uv pip install --python .venv/bin/python -r requirements.txt
 cp .env.example .env                 # then put your OpenCode API key in .env
-.venv/bin/python server.py           # first run builds data/jitendex.sqlite from ../jitendex-yomitan.zip (~10 s)
-# Names (optional): download http://ftp.edrdg.org/pub/Nihongo/JMnedict.xml.gz to the repo root;
-# the next start adds it to the database (~5 s)
+.venv/bin/python server.py
 ```
+
+The first start builds `data/jitendex.sqlite` from the Jitendex zip (~10 s). If `JMnedict.xml.gz` is present, it
+also adds the names (~5 s). A names file downloaded later is picked up on the next start. To refresh either
+dictionary, download the new file, delete `data/jitendex.sqlite` and start the server.
 
 Open http://127.0.0.1:8787.
 
@@ -70,6 +81,10 @@ A 150,000-character paste shows its first words in under 0.25 s and is fully loa
    headwords. A span matches if its surface text is a headword. It also matches if replacing its last token
    with that token's dictionary form gives a headword (的を射た → 的を射る). Fallbacks: katakana → hiragana,
    potential forms (抱ける → 抱く), and kana words found by their reading (すぎる → 過ぎる).
+   **Other kanji:** if a phrase of several tokens has no dictionary match, it may be written with other kanji than
+   Jitendex uses. It then matches a headword with the same reading and the same kana pattern: 吞んだくれている
+   (吞 or 呑) → 飲んだくれる. Single words are excluded, so words that merely sound alike (会う / 遭う) are
+   never confused.
 3. **Absorb endings:** trailing auxiliaries (た, て, ない, れる, ている, すぎる…) join the clickable word.
    する joins a noun that takes it (接見された). The popup names the conjugation steps after the headword,
    as 10ten does: 接見 (< -suru < passive or respectful < past), 食べる (食べられる < passive, potential or respectful).

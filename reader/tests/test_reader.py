@@ -165,3 +165,19 @@ def test_pins_apply_everywhere_but_not_to_counters(tmp_path, monkeypatch):
     assert c.post("/api/pins", json={"word": "円", "reading": None}).json()["pins"] == {}
     assert c.post("/api/pins", json={"word": "円", "reading": "madoka"}).status_code == 400
     assert (tmp_path / "pins.json").exists()
+
+
+@pytest.mark.parametrize("text,word,first_key", [
+    ("日がな一日吞んだくれているダメな父親。", "吞んだくれている", "飲んだくれる"),  # 吞 U+541E
+    ("日がな一日呑んだくれているダメな父親。", "呑んだくれている", "飲んだくれる"),  # 呑 U+5451
+    ("毎晩呑んだくれた。", "呑んだくれた", "飲んだくれる"),
+    ("ただの呑んだくれだ。", "呑んだくれだ", "飲んだくれ"),
+])
+def test_other_kanji_for_the_same_word(text, word, first_key):
+    seg = next(s for p in server.analyze(text) for s in p if s.get("w") and s["t"] == word)
+    assert seg["k"][0] == first_key
+    assert seg["r"][0] == [word[0], "の"]
+
+
+def test_sound_alike_single_words_stay_apart():
+    assert words("友達に会って、事故に遭った。")["会って"] == "会(あ)って"

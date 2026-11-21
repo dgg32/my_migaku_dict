@@ -239,6 +239,27 @@ def pick_reading(key: str, guess: str) -> str:
     return rs[0]
 
 
+def skeleton(text: str) -> str:
+    """Kana pattern with each kanji run as ＊: 吞んだくれる and 飲んだくれる both give ＊んだくれる."""
+    return re.sub(r"＊+", "＊", "".join("＊" if is_kanji(c) else to_hira(c) for c in text))
+
+
+# (reading, kana pattern) -> headwords, for phrases written with other kanji than the dictionary uses
+VARIANTS: dict[tuple, list] = {}
+for _expr, _rs in READINGS.items():
+    if len(_expr) >= 3 and has_kanji(_expr) and not all(is_kanji(c) for c in _expr):
+        _sk = skeleton(_expr)
+        for _r in _rs:
+            if not has_kanji(_r):
+                VARIANTS.setdefault((_r, _sk), []).append(_expr)
+
+
+def variant_key(surf: str, reading: str):
+    """Headword spelled with other kanji but read the same: 吞んだくれ -> 飲んだくれ."""
+    hits = VARIANTS.get((to_hira(reading), skeleton(surf)))
+    return hits[0] if hits and has_kanji(surf) else None
+
+
 def after_number(toks, i: int) -> bool:
     """百円: a counter after a numeral is never a pinned name (円 -> まどか must not touch yen)."""
     return i > 0 and toks[i - 1].pos2 == "数詞"
@@ -273,6 +294,20 @@ def candidates(text: str, toks, i: int):
             key = single_fallback(last, surf)
             if key:
                 out.append((j, key, key != surf))
+        elif j - i >= 2 and all(t.kana for t in span):
+            # other kanji for the same word (吞んだくれる for 飲んだくれる); several tokens only, so that
+            # single words that merely sound alike (会う / 遭う) are never confused
+            noun = variant_key(surf, "".join(t.kana for t in span))
+            verb = (variant_key(base, "".join(t.kana for t in toks[i:j - 1]) + last.kana_base)
+                    if base != surf else None)
+            found = [(j, noun, False)] if noun else []
+            if verb:
+                # 吞んだくれている: the verb 飲んだくれる; ただの吞んだくれだ: the noun 飲んだくれ
+                nxt = toks[j] if j < len(toks) else None
+                copula = nxt is not None and nxt.base in ("だ", "です") and nxt.lemma != "た"
+                verb_first = not noun or (nxt is not None and absorbs(last, nxt) and not copula)
+                found.insert(0 if verb_first else len(found), (j, verb, True))
+            out += found
     return out
 
 
@@ -514,9 +549,9 @@ def analyze_line(line: str, base: int):
                             reading, dict_reading, surface) if key and not pinned and not person else []
         # conjugation chain per matched headword: 食べられる -> {"食べる": "passive, potential or respectful"}
         conj = {}
-        for jc, kc, _ in cands:
-            if kc in conj:
-                continue
+        for jc, kc, ic in cands:
+            if kc in conj or (not ic and jc == j and kc != line[toks[i].s:toks[j - 1].e]):
+                continue  # a noun read off a verb-shaped spelling (飲んだくれ in 吞んだくれている) has no conjugation
             if jc < j and not all(absorbs(a, b) for a, b in zip(toks[jc - 1:end - 1], toks[jc:end])):
                 continue  # 的 of 的を射た: the rest is not an ending
             suru_c = suru and jc == j
