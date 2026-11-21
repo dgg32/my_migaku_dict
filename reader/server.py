@@ -19,7 +19,7 @@ from pathlib import Path
 import fugashi
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -98,12 +98,16 @@ def ensure_names():
     """Add the JMnedict names table on first start after ../JMnedict.xml.gz is downloaded."""
     con = sqlite3.connect(DB_PATH)
     has = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='names'").fetchone()
+    filled = has and con.execute("SELECT 1 FROM names LIMIT 1").fetchone()  # an old build may have stopped midway
     con.close()
-    if not has:
+    if not filled:
         from build_db import DEFAULT_NAMES, build_names
         if DEFAULT_NAMES.exists():
             print("Adding the JMnedict names dictionary ...")
-            build_names(DEFAULT_NAMES, DB_PATH)
+            try:
+                build_names(DEFAULT_NAMES, DB_PATH)
+            except (OSError, ValueError, sqlite3.Error) as ex:
+                print(f"Could not read {DEFAULT_NAMES.name}: {ex}")
 
 
 ensure_names()
@@ -116,10 +120,17 @@ except (OSError, json.JSONDecodeError):
     PINS = {}
 
 
+_pins_lock = threading.Lock()
+
+
 def save_pins():
+    """Call with _pins_lock held."""
     tmp = PINS_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(PINS, ensure_ascii=False, indent=1, sort_keys=True))
     tmp.replace(PINS_PATH)
+
+
+
 _local = threading.local()
 
 
@@ -224,9 +235,28 @@ def tokenize(text: str):
         pos = t.e
     # unidic sometimes reads 来 as き before こ-stem endings (来させる, 来られる)
     for t, n in zip(toks, toks[1:]):
-        if t.surface == "来" and t.base == "来る" and n.surface.startswith(KO_ENDINGS) and not n.surface.startswith("なさ"):
+        if t.surface == "来" and t.base == "来る" and (
+                (n.surface.startswith(KO_ENDINGS) and not n.surface.startswith("なさ"))
+                or (n.pos1 == "助動詞" and n.base == "れる")):  # ら抜き 来れる (来れば stays くれば)
             t.kana = "こ"
-    return toks
+    # 今晩は as one 感動詞 token: only a greeting before a sentence end; 今晩は暇だ is 今晩 + は
+    out = []
+    for k, t in enumerate(toks):
+        nxt = toks[k + 1] if k + 1 < len(toks) else None
+        if (t.pos1 == "感動詞" and len(t.surface) > 1 and t.surface.endswith("は") and t.kana.endswith("は")
+                and nxt is not None and nxt.surface[0] not in SENTENCE_END and interjection_only(t.surface)):
+            noun, wa = Tok(), Tok()
+            noun.surface, noun.s, noun.e = t.surface[:-1], t.s, t.e - 1
+            noun.pos1, noun.pos2, noun.pos3, noun.ctype, noun.cform = "名詞", "普通名詞", "副詞可能", "", ""
+            noun.lemma = noun.base = noun.surface
+            noun.kana = noun.kana_base = t.kana[:-1]
+            wa.surface, wa.s, wa.e = "は", t.e - 1, t.e
+            wa.pos1, wa.pos2, wa.pos3, wa.ctype, wa.cform = "助詞", "係助詞", "", "", ""
+            wa.lemma = wa.base = wa.kana = wa.kana_base = "は"
+            out += [noun, wa]
+        else:
+            out.append(t)
+    return out
 
 
 def pick_reading(key: str, guess: str) -> str:
@@ -294,7 +324,9 @@ def candidates(text: str, toks, i: int):
             key = single_fallback(last, surf)
             if key:
                 out.append((j, key, key != surf))
-        elif j - i >= 2 and all(t.kana for t in span):
+        elif (j - i >= 2 and all(t.kana for t in span)
+              and not (toks[i].pos1 in INFLECTING and toks[i].base in READINGS
+                       and all(absorbs(a, b) for a, b in zip(span, span[1:])))):
             # other kanji for the same word (吞んだくれる for 飲んだくれる); several tokens only, so that
             # single words that merely sound alike (会う / 遭う) are never confused
             noun = variant_key(surf, "".join(t.kana for t in span))
@@ -325,14 +357,37 @@ SENTENCE_END = "。！？!?…」』）)"
 RARE_TAGS = ("obsolete", "rarely", "irregular", "search")
 
 
+# sense-level notes that mark a reading no modern reader expects (朝 as あした, 学生 as がくしょう, 彼 as かの)
+RARE_MISC = {"arch", "obs", "obsc", "poet", "rare", "form"}
+PRIORITY = 100  # Jitendex scores priority (★ news/ichi/spec) readings 100 and up
+AFFIX_POS = {"suf", "pref", "ctr", "n-suf", "n-pref"}
+
+
 @lru_cache(maxsize=65536)
 def usable_readings(key: str) -> tuple:
-    """Jitendex readings of key that are in real use (no obsolete/rare/irregular forms), best first."""
-    out = []
-    for reading, tags, score in db().execute(
-            "SELECT reading, def_tags, score FROM terms WHERE expression = ? ORDER BY score DESC, id", (key,)):
+    """Jitendex readings of key that are in real use, best first.
+
+    Dropped: obsolete/rare/irregular forms; non-priority readings with archaic/poetic/literary senses;
+    and a non-priority reading of an entry that has a priority one (今日: こんち and こんじつ are the
+    same word as きょう/こんにち). A separate word with the same kanji (認める: したためる) stays.
+    """
+    out, best_of_seq = [], {}
+    for reading, tags, score, seq, gloss in db().execute(
+            "SELECT reading, def_tags, score, sequence, glossary FROM terms WHERE expression = ?"
+            " ORDER BY score DESC, id", (key,)):
         if has_kanji(reading) or score < -50 or any(t in (tags or "") for t in RARE_TAGS):
             continue
+        best = best_of_seq.setdefault(seq, score)
+        pos = set(re.findall(r'"code": "([^"]+)", "content": "part-of-speech-info"', gloss))
+        if pos and pos <= AFFIX_POS:
+            continue  # 日 as the counter か, 人 as the suffix じん: never the reading of a word on its own
+        if not all("ぁ" <= c <= "ゖ" or c == "ー" for c in reading):
+            continue  # 中 as the mahjong tile チュン
+        if score < PRIORITY:
+            if best >= PRIORITY and best > score:
+                continue
+            if RARE_MISC & set(re.findall(r'"code": "([^"]+)", "content": "misc-info"', gloss)):
+                continue
         if reading not in out:
             out.append(reading)
     return tuple(out)
@@ -392,6 +447,10 @@ def word_reading(text, toks, i, j, key, inflected):
     # surface is trustworthy and handles irregular stems (来ます -> きます, 来ない -> こない).
     if guess_base == dict_reading and guess_surface and not has_kanji(guess_surface):
         return guess_surface, dict_reading
+    if (j - i == 1 and toks[i].lemma == key and not key.endswith(toks[i].base)
+            and toks[i].kana and not has_kanji(toks[i].kana)):
+        # the potential 来れる is the tokenizer's own word for 来る: trust its kana (これる, not くれる)
+        return toks[i].kana, dict_reading
     stripped = strip_reading(key, dict_reading, text[toks[i].s:toks[j - 1].e])
     return (stripped or guess_surface), dict_reading
 
@@ -400,9 +459,31 @@ def analyze(text: str):
     paragraphs = []
     offset = 0
     for line in text.split("\n"):
-        paragraphs.append(analyze_line(line, offset))
+        para = []
+        for piece, start in line_pieces(line):
+            para += analyze_line(piece, offset + start)
+        paragraphs.append(para)
         offset += u16len(line) + 1
     return paragraphs
+
+
+PIECE = 2000
+
+
+def line_pieces(line: str):
+    """A very long paragraph (a web page copied without line breaks) in sentence-sized pieces of about
+    PIECE characters, so streaming can show the start before the rest is analyzed: [(piece, utf16 start)]."""
+    out, a, u = [], 0, 0
+    while len(line) - a > PIECE * 3 // 2:
+        cut = max(line.rfind(c, a + PIECE // 2, a + PIECE) for c in "。！？!?\n")
+        b = cut + 1 if cut > 0 else a + PIECE
+        while b < len(line) and line[b] in "」』）)】”’":
+            b += 1
+        out.append((line[a:b], u))
+        u += u16len(line[a:b])
+        a = b
+    out.append((line[a:], u))
+    return out
 
 
 def u16len(s: str) -> int:
@@ -419,6 +500,7 @@ AUX_LABELS = {
     "まい": "negative volitional", "ば": "conditional (-ba)", "ちゃ": "-te wa", "じゃ": "-te wa",
     "そう": "looks like / hearsay", "らしい": "seems", "すぎる": "too much", "過ぎる": "too much",
     "やすい": "easy to", "にくい": "hard to", "づらい": "hard to", "がたい": "hard to",
+    "ちゃう": "-te shimau (-chau)", "じゃう": "-te shimau (-chau)", "べし": "should (beki)",
 }
 TE_LABELS = {"いる": "-te iru", "ある": "-te aru", "しまう": "-te shimau", "おく": "-te oku", "みる": "-te miru",
              "いく": "-te iku", "くる": "-te kuru", "くれる": "-te kureru", "あげる": "-te ageru",
@@ -451,6 +533,10 @@ def conj_chain(stem: Tok, extra: list, suru: bool, potential: bool) -> str:
             label = AUX_LABELS.get(t.base) or AUX_LABELS.get(t.lemma)
             if t.pos1 == "助動詞" and t.base == "だ" and t.lemma == "た":
                 label = "past"  # 呑んだ
+            elif t.base == "ない" and t.cform.startswith("仮定形-融合"):
+                label = "must (-nakya)"  # 食べなきゃ
+            elif t.base == "れる" and prev.pos1 == "動詞" and prev.ctype.startswith(("上一段", "下一段", "カ行変格")):
+                label = "potential (ra-less)"  # 来れる, 見れる: れる straight after an ichidan stem
             if label and not (label == "polite" and label in chain):
                 chain.append(label)
         form = t.cform.split("-")[0]
@@ -469,8 +555,10 @@ def alternatives(line, toks, i, j, end, key, inflected, reading, dict_reading, s
     """
     if not has_kanji(surface) or any(t.ctype.startswith(IRREGULAR) for t in toks[i:j]):
         return []  # 来る/する stems change irregularly; the tokenizer handles those
+    if j - i == 1 and toks[i].pos1 in ("接尾辞", "接頭辞"):
+        return []  # 三人's 人, 御-: the affix reading comes from the tokenizer
     options = usable_readings(key)
-    if len(options) < 2:
+    if len(options) < 2 or dict_reading not in options:
         return []
     matched = line[toks[i].s:toks[j - 1].e]
     # reading of the matched part, so the absorbed tail (た, される…) can be reattached to each option
@@ -567,7 +655,7 @@ def analyze_line(line: str, base: int):
         else:
             segs.append({
                 "s": base + u16[s], "e": base + u16[e], "t": surface,
-                "r": ruby_parts(surface, reading),
+                "r": [[surface, reading]] if pinned and not has_kanji(surface) else ruby_parts(surface, reading),
                 "k": keys, "w": 1, "m": 1 if key else 0,
                 "p": 1 if key and j - i > 1 and len(key) > 2 and not all_kana(key) else 0,
                 **({"c": conj} if conj else {}),
@@ -773,10 +861,16 @@ TTS_DIR = DATA / "tts"
 TTS_CACHE_FILES = 400
 
 
+SPEAK_MAX = 3000
+
+
 @app.get("/api/speak")
-def api_speak(text: str):
+def api_speak(text: str, x_reader: str | None = Header(None)):
     """Read Japanese aloud with a macOS voice (`say`). Returns a WAV file, cached by text."""
-    text = text.strip()[:3000]
+    if x_reader != "1":
+        # only the reader page sends this header; other web sites can't make the server synthesize speech
+        raise HTTPException(403, "missing X-Reader header")
+    text = text.strip()[:SPEAK_MAX]
     if not text:
         raise HTTPException(400, "empty text")
     if not shutil.which("say"):
@@ -797,9 +891,15 @@ def api_speak(text: str):
         files = sorted(TTS_DIR.glob("*.wav"), key=lambda f: f.stat().st_mtime)
         for f in files[:-TTS_CACHE_FILES]:
             f.unlink(missing_ok=True)
+    else:
+        try:
+            os.utime(path)  # recently used clips are evicted last
+        except OSError:
+            pass
     return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
 
 
+HAS_NAMES = bool(db().execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='names'").fetchone())
 NAME_ORDER = ("surname", "female given name", "male given name", "given name", "person", "place")
 
 
@@ -807,8 +907,12 @@ NAME_ORDER = ("surname", "female given name", "male given name", "given name", "
 def api_names(word: str):
     """JMnedict readings of a word, person names first: [{reading, types, gloss}]."""
     merged: dict[str, dict] = {}
-    for reading, types, gloss in db().execute(
-            "SELECT reading, types, gloss FROM names WHERE expression = ? LIMIT 200", (word,)):
+    try:
+        rows = db().execute("SELECT reading, types, gloss FROM names WHERE expression = ? LIMIT 200", (word,)).fetchall()
+    except sqlite3.OperationalError:
+        rows = []  # JMnedict is optional: no names table
+    for reading, types, gloss in rows:
+        reading = to_hira(reading)  # the same form a pin is stored in (スリーエム -> すりーえむ)
         m = merged.setdefault(reading, {"reading": reading, "types": [], "gloss": gloss})
         for t in (types or "").split(", "):
             if t and t not in m["types"]:
@@ -828,24 +932,37 @@ def api_pin(req: PinReq):
     word = req.word.strip()
     if not word or len(word) > 20:
         raise HTTPException(400, "bad word")
-    if req.reading is None:
-        PINS.pop(word, None)
-    else:
+    reading = None
+    if req.reading is not None:
         reading = to_hira(req.reading.strip())
-        if not reading or not all("ぁ" <= c <= "ゖ" or c == "ー" for c in reading):
+        if (not reading or len(reading) > 40 or not all("ぁ" <= c <= "ゖ" or c == "ー" for c in reading)
+                or reading.strip("ー") == ""):
             raise HTTPException(400, "reading must be kana")
-        PINS[word] = reading
-    save_pins()
-    return {"pins": PINS}
+    with _pins_lock:
+        if reading is None:
+            PINS.pop(word, None)
+        else:
+            PINS[word] = reading
+        save_pins()
+        return {"pins": dict(PINS)}
 
 
 @app.get("/api/config")
 def config():
-    return {"model": MODEL, "has_key": bool(API_KEY)}
+    return {"model": MODEL, "has_key": bool(API_KEY), "has_names": HAS_NAMES}
+
+
+MAX_TEXT = 2_000_000
+
+
+def check_size(text: str):
+    if len(text) > MAX_TEXT:
+        raise HTTPException(413, f"text too long ({len(text):,} characters; the limit is {MAX_TEXT:,})")
 
 
 @app.post("/api/analyze")
 def api_analyze(req: AnalyzeReq):
+    check_size(req.text)
     text = unicodedata.normalize("NFC", req.text)
     return {"text": text, "paragraphs": analyze(text)}
 
@@ -856,20 +973,30 @@ def api_analyze_stream(req: AnalyzeReq):
 
     Line 1: {"text": ...}; then {"paragraphs": [...]} chunks (~1.5k characters first, ~20k after).
     """
+    check_size(req.text)
     text = unicodedata.normalize("NFC", req.text)
 
     def chunks():
         yield json.dumps({"text": text}, ensure_ascii=False) + "\n"
-        batch, size, limit, offset = [], 0, 1500, 0
+        # join=1: the first paragraph of this chunk continues the last one sent (a long line in pieces)
+        batch, size, limit, offset, join = [], 0, 1500, 0, 0
         for line in text.split("\n"):
-            batch.append(analyze_line(line, offset))
+            for n, (piece, start) in enumerate(line_pieces(line)):
+                segs = analyze_line(piece, offset + start)
+                if n == 0 or not batch:
+                    if n and not batch:
+                        join = 1
+                    batch.append(segs)
+                else:
+                    batch[-1] += segs
+                size += len(piece)
+                if size >= limit:
+                    yield json.dumps({"paragraphs": batch, "join": join}, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    batch, size, limit, join = [], 0, 20000, 0
             offset += u16len(line) + 1
-            size += len(line) + 1
-            if size >= limit:
-                yield json.dumps({"paragraphs": batch}, ensure_ascii=False, separators=(",", ":")) + "\n"
-                batch, size, limit = [], 0, 20000
+            size += 1
         if batch:
-            yield json.dumps({"paragraphs": batch}, ensure_ascii=False, separators=(",", ":")) + "\n"
+            yield json.dumps({"paragraphs": batch, "join": join}, ensure_ascii=False, separators=(",", ":")) + "\n"
 
     return StreamingResponse(chunks(), media_type="application/x-ndjson")
 
@@ -898,6 +1025,15 @@ READING_SYSTEM = """あなたは日本語の読み方の専門家です。
 _reading_cache: dict = {}
 
 
+def context_window(sentence: str, word: str, size: int = 120) -> str:
+    """The sentence, or for a very long one the part around the word (the model must see the word)."""
+    if len(sentence) <= 2 * size + len(word):
+        return sentence
+    at = max(sentence.find(word), 0)
+    a, b = max(0, at - size), min(len(sentence), at + len(word) + size)
+    return ("…" if a else "") + sentence[a:b] + ("…" if b < len(sentence) else "")
+
+
 async def llm_complete(messages) -> str:
     out = ""
     async for piece in llm_stream(messages, 0.0):
@@ -910,16 +1046,18 @@ async def llm_complete(messages) -> str:
 @app.post("/api/readings")
 async def api_readings(req: ReadingsReq):
     """AI reading check: pick each ambiguous word's reading in its sentence (抱く: いだく/だく)."""
-    result, todo = {}, []
+    result, todo, same = {}, {}, {}
     for it in req.items[:80]:
-        ck = (it.word, it.sentence, tuple(it.options))
+        ck = (it.word, context_window(it.sentence, it.word), tuple(it.options))
         if ck in _reading_cache:
             result[it.id] = _reading_cache[ck]
         elif len(it.options) >= 2:
-            todo.append(it)
+            todo.setdefault(ck, it)  # the same word in the same sentence is asked once
+            same.setdefault(ck, []).append(it.id)
     if todo:
-        lines = [f"{n}. 語：{it.word}　文：{it.sentence[:200]}　候補：{' / '.join(it.options)}"
-                 for n, it in enumerate(todo, 1)]
+        todo_items = list(todo.items())
+        lines = [f"{n}. 語：{ck[0]}　文：{ck[1]}　候補：{' / '.join(ck[2])}"
+                 for n, (ck, it) in enumerate(todo_items, 1)]
         msgs = [{"role": "system", "content": READING_SYSTEM}, {"role": "user", "content": "\n".join(lines)}]
         try:
             raw = await llm_complete(msgs)
@@ -930,11 +1068,14 @@ async def api_readings(req: ReadingsReq):
             picks = json.loads(m.group(0)) if m else {}
         except json.JSONDecodeError:
             picks = {}
-        for n, it in enumerate(todo, 1):
+        for n, (ck, it) in enumerate(todo_items, 1):
             choice = str(picks.get(str(n), "")).strip()
             if choice in it.options:  # never accept a reading outside Jitendex's list
-                _reading_cache[(it.word, it.sentence, tuple(it.options))] = choice
-                result[it.id] = choice
+                if len(_reading_cache) >= 20000:
+                    _reading_cache.pop(next(iter(_reading_cache)))  # forget the oldest
+                _reading_cache[ck] = choice
+                for i in same[ck]:
+                    result[i] = choice
     return {"readings": result}
 
 

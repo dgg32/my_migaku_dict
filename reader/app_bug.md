@@ -319,3 +319,312 @@ open('/tmp/app.js','w').write(re.search(r'<script>(.*)</script>', src, re.S).gro
 PY
 node --check /tmp/app.js
 ```
+
+---
+
+# Round 2 — second pass (2026-11-21, current code)
+
+The app was substantially rewritten after round 1 (AI reading check, JMnedict names + pins, TTS,
+streaming analysis, resizable chat, 987-line frontend, tests). This round re-checked the fixes and
+hunted in the new code.
+
+Method: 53-test suite run; the real `data/jitendex.sqlite`; a `/tmp` copy of the server with a local
+OpenAI-compatible SSE mock (so no real tokens were spent) for `/api/readings`, `/api/translate`,
+`/api/chat`; and headless Chromium probes of the actual page (clicks, selections, scrolling,
+placement, AI application, TTS, pins, 60k/140k streaming). No app files were modified; the `/tmp`
+copy and mock were deleted afterwards.
+
+## Round-1 findings: status
+
+| Item | Status |
+|---|---|
+| A1 来る inflections | **most fixed**; ら抜き 来れる still wrong → B1 |
+| A2 redirect by sequence | fixed, verified (數 / 機關 / 鐵漿 tests) |
+| A3 UTF-16 offsets | fixed, verified (tests + 20-span emoji probe) |
+| A4 shared fugashi Tagger | fixed (thread-local `tagger()`, `server.py:123, 188-192`) |
+| A5 chat message lost while busy | fixed (Send disabled, draft kept, `index.html:875-879`) |
+| A6 selbar off-screen | fixed; headless probe: visible mid-list and flips above at the bottom |
+| A7 popups detach on scroll | fixed (`#main` scroll hides popups); verified |
+| A8 fetch failures stuck | fixed (`postJSON`/`streamPost`/`load` check `r.ok`) |
+| A9 lookup race | fixed (`lookupSeq`, `index.html:533-554`) |
+| A10 stale port in docstring | fixed |
+| A11 `terms.term_tags` always empty | **still present** (schema/insert unchanged) |
+| A12 glossary `img` dropped | **still present** |
+| A13 popup ruby over okurigana | fixed (server sends `e.ruby`, `headwordHTML` uses it) |
+| A14 div-sense glossary bullets | **still present** (`data/jitendex.css` unchanged) |
+| A15 README chat-context claim | fixed (README now states the 60k limit) |
+
+## New bugs
+
+### B1 (high, wrong reading and wrong entry) — ら抜き 来れる is still broken
+
+| input | shown | correct |
+|---|---|---|
+| 来れる | 来(く)れる, key `来る` | 来(こ)れる |
+| 来れない | 来(く)れない | 来(こ)れない |
+| 来れた | 来(く)れた | 来(こ)れた |
+| もう来れる | 来(き)れる, keys `切れる, 来る` | 来(こ)れる |
+
+Two different wrong paths:
+
+1. A lone `来れる` token (fugashi: base 来れる, kana これる) is turned into the dictionary key `来る` by
+   the potential-form fallback (`single_fallback`, `server.py:341-362`, because unidic classes 来れる as
+   下一段). `word_reading` then rebuilds from 来る/くる → `く` + `れ` + `る`.
+2. In `もう来れる` fugashi splits `来` + `れる`; the two-token span hits the "*other kanji*" variant
+   branch (`server.py:297-310`) with kana きれる, which matches the dictionary word `切れる` by
+   skeleton `＊れる` + reading. `切れる` is returned **first**, so clicking the word opens 切れる.
+
+The round-1 `KO_ENDINGS` fix (`server.py:225-229`) cannot cover this: it deliberately leaves 来れ
+alone because 来れば must stay くれば.
+
+Fix: when the token itself is the potential form (`base` ends in れる/れる and kana agrees, e.g.
+来れる), prefer the token's contextual kana (これる) over the dictionary-stem reconstruction; and for
+the split form (`来` + `れる`) do not let the variant branch override an inflected single-token match
+with a different headword. Add 来れる/来れない/来れた to the tests (which currently stop at 来られる and
+来させる).
+
+### B2 (medium, wrong popup) — 今晩は in a non-greeting sentence shows the greeting entry
+
+`今晩は暇だ。` and `今晩は、暇だ。` both produce segment `今晩は` with key `今晩は` → the popup is the
+greeting 今晩は (こんばんは), not 今晩 + は. The furigana happens to look right (今晩(こんばん)は) only
+because the greeting reading aligns.
+
+The interjection guard (`server.py:282-284`) only runs when the greeting spans more than one token
+(`j - i > 1` and last token 助詞). Here fugashi emits 今晩は as a single 感動詞 token, so nothing
+checks that it is followed by a sentence end. 今日は works only because it is usually split.
+
+Fix: extend the guard to a single-token match: if `interjection_only(key)` and the following token is
+not in `SENTENCE_END` (and not end-of-line/end-of-text), do not use the interjection entry; fall back
+to the tokenizer reading (which gives the correct 今晩(こんばん)は) and lookup of the surface only in
+greeting position. A test `("今晩は暇だ。", "今晩", "今晩(こんばん)")` would cover it.
+
+### B3 (high, quality + cost) — the AI reading check offers rare/archaic readings the README says it never offers
+
+`usable_readings` (`server.py:329-338`) filters only `score < -50` and the row-level `def_tags`
+(`rarely`, `obsolete`, `irregular`, `search`). Rare readings that are tagged at the **sense** level
+(`misc-info` codes `arch`/`poet`) and have score 0 pass through:
+
+```
+朝      usable: あさ / ちょう / あした      ← あした: score 0, sense misc "poetical"
+学生    usable: がくせい / がくしょう / がくそう  ← both score 0/-1, sense misc "archaic"
+彼      usable: かれ / かの                  ← かの offered on every 彼
+今日    usable: きょう / こんにち / こんち / こんじつ ← こんち/こんじつ (98/97)
+```
+
+README (`README.md:98`) says "Rare and obsolete readings are never offered". That is false for the
+rows above. Consequences: common words (彼, 今日, 朝, 外, 学生…) are sent to the model on **every
+occurrence**, and the candidate list contains readings no reader would want. A deliberately naive mock
+that always picks the second option turned 彼(かれ) into 彼(かの), 朝(あさ) into 朝(ちょう), and
+学生(がくせい) into 学生(がくしょう); a real model is better but the false-option surface is the risk.
+
+Volume measured on a prose sample: 1,250 of 13,500 segments (9.3 %) had alternatives — 32 batches of
+40 items for 30.5k characters. `/api/readings` also repeats the whole sentence for every ambiguous
+word in it instead of grouping by sentence, and `_reading_cache` is in-memory only.
+
+Fix suggestions: also inspect the sense-level `misc-info` codes (`arch`, `obs`, `poet`, `rare`) and/or
+require Jitendex priority (score ≥ some threshold, or both readings tagged ★); group request items by
+sentence; cap per paragraph; persist the cache; and update the README to match the actual filter.
+
+### B4 (medium, silent wrong answers) — `/api/readings` truncates the sentence to 200 characters
+
+`server.py:921` builds the prompt with `it.sentence[:200]`. When the ambiguous word appears after the
+200th character of a long sentence, the model receives text that does not contain the word at all.
+Reproduced: `"あ"*250 + "希望を抱く。"` produced this prompt line:
+
+```
+1. 語：抱く　文：あああ…（200 あ）…　候補：いだく / だく
+```
+
+The model therefore cannot use context; it will guess. `expandToSentences` regularly returns sentences
+longer than 200 characters in novels. Fix: send a window around the word (e.g. 100 chars either side,
+or the sentence up to a larger cap), or send the full sentence and cap only the total request.
+
+### B5 (medium, wrong UI state) — a chat reply from the old text can land in the new conversation
+
+`pasteText` clears `state.chat` when the pasted text differs (`index.html:932-936`), but an in-flight
+`sendChat` has no generation/abort guard: when the old reply finishes it pushes its assistant message
+into the freshly cleared chat (`index.html:847-868`). Verified with a 2 s mock: after pasting new text,
+`state.chat` was `[assistant: "这是回答。"]` — a reply about the previous text in the new conversation.
+
+`#btn-clear` (`index.html:880`) has the same problem: clicking Clear while a reply streams leaves that
+reply behind. Fix: bump a chat generation on text change/clear (or abort the chat request) and drop
+stale replies; optionally disable Clear while `state.busy`.
+
+### B6 (medium, wasted work) — TTS synthesis is prefetched on every word click and every selection
+
+Both `lookup()` (`index.html:539`) and the selection handler (`index.html:703`) unconditionally call
+`audioURL(...)`, i.e. every click on a word and every mouse selection spawns a `say` process
+(~1.5 s CPU, a ~45 KB WAV on disk) even when the user never presses 🔊. Headless probe confirmed
+`audioCache` grows on selection (`ttsPrefetchDelta: 1`) and after a few clicks. Rapid browsing reads
+dozens of clips. Fix: prefetch on pointerover/first press of the 🔊 button, or add an audio on/off
+setting; at minimum debounce.
+
+### B7 (medium, error spam for an optional dictionary) — `/api/names` returns 500 when JMnedict is absent
+
+`api_names` (`server.py:807-817`) queries `names` without a guard. JMnedict is optional per the README;
+without it the table does not exist and the API raises `sqlite3.OperationalError: no such table:
+names` → 500. The frontend calls `/api/names` for **every kanji word** (`index.html:546-549`), so
+without JMnedict every click logs a failed request (the UI hides names because `r.ok` is false, so it
+looks fine). Verified with an in-process DB that has `terms` but no `names`. Fix: return
+`{"word": word, "pinned": ..., "names": []}` when the table is missing (catch `OperationalError` or
+check `sqlite_master`), and/or expose `has_names` in `/api/config`.
+
+### B8 (medium, pins can't be undone) — katakana name readings never show as pinned
+
+102,573 of 749,064 name readings contain katakana (e.g. ３Ｍ → スリーエム, ＡＮＣ → エーエヌシー).
+`api_pin` normalizes the reading with `to_hira` (`server.py:826-839`), but `api_names` returns the raw
+JMnedict reading. `renderNames` compares strictly (`pinned === n.reading`, `index.html:587-590`), so
+the row never switches to "📌 Pinned" and clicking it again just re-pins. Verified:
+
+```
+pin スリーエム -> {"pins": {"３Ｍ": "すりーえむ"}}
+after pin: pinned = すりーえむ | row reading = スリーエム | UI shows Pinned: False
+```
+
+Fix: normalize name readings with `to_hira` in `/api/names` (display is unaffected) or compare
+normalized in the UI; also let the server send the pinned reading per row.
+
+### B9 (low/medium, streaming claim) — single-line texts do not stream
+
+`api_analyze_stream` batches by lines (`server.py:853-874`), so a paste with no newlines is one giant
+paragraph chunk. Measured:
+
+```
+140,000 chars, one line   → 2 chunks, first paragraphs after 2,045 ms
+145,000 chars, 5,000 lines → 10 chunks, first paragraphs after    34 ms, total 1,843 ms
+```
+
+The README's "sends paragraphs as it analyzes them / first words in under 0.25 s" only holds for text
+with newlines (Apple Books excerpts usually have them, but web-page copies may not). Fix: split overlong
+lines at sentence boundaries or a character budget (e.g. 2–4k chars) before analyzing.
+
+### B10 (low/medium, recovery) — an interrupted names build is never repaired
+
+`build_names` (`build_db.py:94-127`) runs `DROP TABLE IF EXISTS names; CREATE TABLE names …` via
+`executescript` (committed immediately), then bulk-inserts and commits at the end. If the process is
+killed mid-build (5.7 s window on this machine), the empty `names` table remains committed. At the next
+start `ensure_names` (`server.py:97-109`) only checks whether the table exists, so it never rebuilds —
+names stay empty until the user deletes the whole 700 MB DB. Fix: build into `names_new`, verify the
+row count, then `ALTER TABLE … RENAME` inside a transaction; make `ensure_names` check
+`SELECT COUNT(*)` (and consider guarding against two servers building concurrently).
+
+### B11 (low) — small validation/robustness gaps
+
+- `POST /api/pins` accepts the reading `"ー"` (returns 200, stores it). Require at least one real kana.
+- `save_pins` (`server.py:119-122`) has no lock. Two concurrent pin requests mutate the shared `PINS`
+  dict and dump it; `json.dumps` iterating while another thread inserts can raise
+  "dictionary changed size during iteration". Use a lock (and the fixed `.tmp` name makes concurrent
+  writers race for the same file).
+- `_reading_cache` (`server.py:898`) is unbounded, in-memory only, and a batch is not deduped before
+  the request; repeated words/sentences in the same batch are sent repeatedly. Persist it and/or cap it.
+- `/api/speak` silently truncates text to 3,000 characters (`server.py:779`) — a long selection is
+  spoken only partially with no indication.
+- TTS cache eviction is by file mtime and serving does not update mtime, so a frequently used clip can
+  be evicted while one-offs stay; the in-page `audioCache` eviction can revoke the object URL that is
+  currently playing (60 clips).
+- `/api/speak` is a `GET` (a "simple" cross-site request): any web page can make the local server
+  synthesize arbitrary text (CPU/disk churn) even though the response cannot be read. A POST or a
+  same-origin token would remove this; risk is low for a localhost single-user app.
+- The analyze endpoints have no size cap; a multi-MB paste ties up a worker thread and memory.
+
+### B12 (cosmetic) — conjugation labels are sometimes wrong or missing
+
+- 食べれる → "passive or respectful" (it is the ら抜き potential; 食べられる is the ambiguous one).
+- 食べちゃった → only "past"; the 〜ちゃう/〜じゃう contraction is not labelled.
+- 食べなきゃ → "negative"; the conditional/must meaning of なきゃ is missing.
+- 行くべき → no chain at all (`べき` is absorbed but has no `AUX_LABELS` entry).
+- 飲まされる → analysed as 飲ます + passive; defensible, but 飲む + causative-passive is the more
+  common reading.
+
+### B13 (cosmetic) — pins on kana/latin names have no effect on voice or furigana
+
+`segKana` builds the spoken form from `seg.r` (`index.html:516`), and `ruby_parts` gives no ruby to a
+surface without kanji. So pinning e.g. ３Ｍ → すりーえむ stores the pin, sets `seg.pin`, but the word
+is still spoken as the surface and no reading is displayed. For kanji names (平城 → ひらじろ) it works.
+Fix: for pinned segments, speak the pinned reading directly regardless of ruby.
+
+### B14 (cosmetic) — small UI nits
+
+- `#btn-paste`'s clipboard-denied fallback calls `showEditor()` and then **clears** `#input`
+  (`index.html:947-949`), discarding an existing draft.
+- `#btn-clear-text` leaves the chat conversation about the now-removed text (paste clears it, Clear does
+  not), and `api_chat` then receives an empty article with old messages.
+- The **AI 読み** button stays enabled when no API key is configured; the only hint is "· no API key"
+  in the sidebar, and the status never says the reading check is off.
+- A large text is stored in `localStorage` silently; past ~5 MB the write fails (caught) and the text is
+  lost on reload. 150k characters are fine; a whole novel may not be.
+- `appendParagraphs` captures `state.hasKey` once per chunk; a paste that arrives before `/api/config`
+  resolves gets no AI check for its first paragraphs, and they are never re-observed.
+
+## Verified OK in round 2
+
+- **All 53 tests pass** (`pytest -q`, 3.2 s), including the round-1 regression tests for 来ます /
+  抱ける / 一にも二にも / redirects by sequence / UTF-16 offsets / conjugation chains.
+- **Round-1 fixes work in the real UI** (headless probes): popup opens 8 px under a clicked word while
+  `#main` is scrolled; it flips above near the bottom and closes on scroll; the selection toolbar is
+  clamped and flips above at the bottom; an AI-adjusted word's entry is listed first; pins survive a
+  reload and 三百二十円 stays えん; 平城 → ひらじろ; 円高/平城京 (dictionary words) are not pinned.
+- **AI pipeline with a mock**: `/api/readings` returns validated picks, caches them, ignores an invalid
+  choice, tolerates fenced JSON, and turns an upstream 500 into `{"error": "⚠️ API error 500: …"}`
+  (frontend marks the check failed). Sentence/batch/status plumbing works.
+- **TTS**: `/api/speak` returns 22,050 Hz mono WAV, caches (second hit 12 ms), handles an empty text
+  (400) and a leading `-`; the selected voice is `Kyoko (Enhanced)` on this machine.
+- **Names**: `/api/names?word=平城` returns 9 readings with place/surname first; a non-name returns an
+  empty list; `/api/pins` validates empty/too-long/non-kana input (except `ー`).
+- **Streaming**: multi-line 145k text: first paragraphs after 34 ms, complete in 1.84 s (README's
+  ~0.25 s / ~1.3 s is in the right ballpark); 60k text 79 ms / 1.27 s; a single-line 140k text is the
+  exception (B9).
+- **Ruby/offset integrity**: over 2,160 word segments, zero single-run ruby fallbacks and zero
+  surface-reconstruction failures; all `s/e` offsets slice exactly `t` (incl. emoji/Ext-B).
+- **Robustness**: empty / NUL / 10k-kana / 50-Ext-B / 5k-latin inputs return 200 without crashing.
+- **Variants**: real phrases (目が覚めた, 気がついた, 腹が立つ, 雨が降る, 世話になる, 呑んだくれる…)
+  resolve to the expected headwords; a battery of common noun+particle spans produced no false matches.
+- **Build metrics**: `build_names` 749,064 rows in 5.7 s / 55 MB temp DB (README ~5 s); server import
+  2.3 s, 206 MB RSS, 71,115 variant keys.
+
+## Improvement suggestions (round 2)
+
+1. Fix **B1** and **B2** — both are user-visible wrong readings/entries in common text; add the missing
+   golden tests.
+2. Rework the ambiguity filter for **B3** and the prompt window for **B4**. The AI reading check is the
+   most expensive feature and the easiest to make unreliable: require plausible/priority readings,
+   group items by sentence, dedupe in a batch, and persist the cache.
+3. Add a conversation generation/abort for **B5** (and for Clear) — one counter plus a check after
+   `streamPost` is enough.
+4. Make TTS lazy (**B6**): a small "audio" toggle or prefetch on hover; this also removes the
+   click-driven `say` process churn.
+5. Guard the optional names path (**B7**), normalize pins vs names (**B8**), and make the names build
+   atomic/recoverable (**B10**).
+6. Split overlong lines in `api_analyze_stream` (**B9**) so the streaming promise holds for any paste.
+7. Small hardening (**B11**): pin validation + lock, bounded/persisted reading cache, explicit
+   truncation in `/api/speak`, POST or token for synthesis, request-size caps.
+8. Conjugation labels (**B12**) and pinned non-kanji speech (**B13**) are cheap polish with tests.
+9. UI nits (**B14**): keep the editor draft on a denied clipboard, clear/keep chat consistently, show
+   when the AI check is unavailable, and consider IndexedDB for very large saved texts.
+10. Finish the two round-1 leftovers: `terms.term_tags` (always empty; remove or fill) and glossary
+    images (currently dropped silently in `sc()`), plus the div-sense glossary bullets.
+
+## Round-2 reproduction (no real API calls)
+
+```sh
+# tests
+.venv/bin/python -m pytest -q
+
+# B1 / B2 / B3 (in-process, uses the real DB)
+.venv/bin/python - <<'PY'
+import server
+for t in ["来れる。", "もう来れる。", "今晩は暇だ。", "朝が来た。学生だ。彼は来た。"]:
+    print(t, [(s["t"], s["k"], "".join(b + (f"({r})" if r else "") for b, r in s["r"])) for s in server.analyze(t)[0] if s.get("w")])
+print(server.usable_readings("朝"), server.usable_readings("学生"), server.usable_readings("彼"))
+PY
+
+# B4 (needs a server on READER_PORT; mock at OPENCODE_BASE_URL, see /tmp mock)
+curl -s -X POST localhost:8787/api/readings -H 'Content-Type: application/json' \
+  -d '{"items":[{"id":"1","word":"抱く","sentence":"'"$(python3 -c 'print("あ"*250+"希望を抱く。")')"'","options":["いだく","だく"]}]}'
+# inspect the mock request log: the 文： field is 200 chars and does not contain 抱く
+
+# B5 (headless probe or manual): start a chat reply, paste new text, watch the old reply appear
+# B7: point a TestClient at a DB without the names table and GET /api/names -> 500
+# B8: pin a katakana name reading, then GET /api/names -> pinned != row reading
+# B9: single-line 140k text through /api/analyze_stream -> first paragraphs only after the whole line
+```

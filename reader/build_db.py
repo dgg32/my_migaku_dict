@@ -94,7 +94,8 @@ def build(zip_path: Path = DEFAULT_ZIP, out_dir: Path = DATA) -> Path:
 def build_names(gz_path: Path = DEFAULT_NAMES, db_path: Path = DATA / "jitendex.sqlite") -> int:
     """Add (or replace) the JMnedict names table: one row per written form x reading."""
     con = sqlite3.connect(db_path)
-    con.executescript("DROP TABLE IF EXISTS names; CREATE TABLE names "
+    # build into names_new and swap it in at the end, so an interrupted build never leaves an empty table
+    con.executescript("DROP TABLE IF EXISTS names_new; CREATE TABLE names_new "
                       "(expression TEXT NOT NULL, reading TEXT NOT NULL, types TEXT, gloss TEXT, seq INTEGER);")
     rows, count = [], 0
     with gzip.open(gz_path) as f:
@@ -115,12 +116,20 @@ def build_names(gz_path: Path = DEFAULT_NAMES, db_path: Path = DATA / "jitendex.
                     rows.append((k, r, ", ".join(types), gloss, seq))
             el.clear()
             if len(rows) > 50000:
-                con.executemany("INSERT INTO names VALUES (?,?,?,?,?)", rows)
+                con.executemany("INSERT INTO names_new VALUES (?,?,?,?,?)", rows)
                 count += len(rows)
                 rows = []
-    con.executemany("INSERT INTO names VALUES (?,?,?,?,?)", rows)
+    con.executemany("INSERT INTO names_new VALUES (?,?,?,?,?)", rows)
     count += len(rows)
-    con.execute("CREATE INDEX idx_names_expr ON names(expression)")
+    if not count:
+        con.execute("DROP TABLE names_new")
+        con.commit()
+        con.close()
+        raise ValueError(f"no names found in {gz_path}")
+    con.execute("DROP INDEX IF EXISTS idx_names_expr")
+    con.execute("CREATE INDEX idx_names_expr ON names_new(expression)")
+    con.execute("DROP TABLE IF EXISTS names")
+    con.execute("ALTER TABLE names_new RENAME TO names")
     con.commit()
     con.close()
     print(f"Wrote {count} name readings from {gz_path.name}")

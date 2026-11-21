@@ -39,6 +39,12 @@ def words(text):
     ("公判での質疑も的を射たものになる。", "的を射た", "的(まと)を射(い)た"),
     ("日がな一日呑んだ。", "日がな一日", "日(ひ)がな一日(いちにち)"),
     ("行けなかった。", "行けなかった", "行(い)けなかった"),
+    # ら抜き potential of 来る (B1); 来れば stays くれば
+    ("来れる。", "来れる", "来(こ)れる"),
+    ("来れない。", "来れない", "来(こ)れない"),
+    ("来れた。", "来れた", "来(こ)れた"),
+    ("もう来れる。", "来れる", "来(こ)れる"),
+    ("来れば分かる。", "来れば", "来(く)れば"),
 ])
 def test_readings(text, word, expected):
     assert words(text)[word] == expected
@@ -94,6 +100,10 @@ def test_api_smoke():
     ("来い", "来い", "来る", "imperative"),
     ("希望が抱ける", "抱ける", "抱く", "potential"),
     ("的を射た", "的を射た", "的を射る", "past"),
+    ("もう来れる。", "来れる", "来る", "potential (ra-less)"),
+    ("食べちゃった", "食べちゃった", "食べる", "-te shimau (-chau) < past"),
+    ("食べなきゃ", "食べなきゃ", "食べる", "must (-nakya)"),
+    ("行くべき", "行くべき", "行く", "should (beki)"),
 ])
 def test_conjugation_chain(text, word, key, chain):
     seg = next(s for p in server.analyze(text) for s in p if s.get("w") and s["t"] == word)
@@ -109,6 +119,9 @@ def test_no_chain_for_dictionary_forms():
     ("今日は暑い。", "今日", "今日(きょう)"),        # not the greeting こんにちは
     ("今日は、いい天気。", "今日", "今日(きょう)"),
     ("「今日は」と言った。", "今日は", "今日(こんにち)は"),  # a real greeting stays one word
+    ("今晩は暇だ。", "今晩", "今晩(こんばん)"),        # B2: one 感動詞 token in the tokenizer
+    ("今晩は、暇だ。", "今晩", "今晩(こんばん)"),
+    ("「今晩は」", "今晩は", "今晩(こんばん)は"),
 ])
 def test_greeting_only_before_sentence_end(text, word, expected):
     assert words(text)[word] == expected
@@ -131,6 +144,74 @@ def test_no_alternatives_for_irregular_or_unambiguous(text, word):
     assert "a" not in seg
 
 
+@pytest.mark.parametrize("key,kept,dropped", [
+    ("朝", {"あさ"}, {"あした"}),                      # poetic
+    ("学生", {"がくせい"}, {"がくしょう", "がくそう"}),  # archaic
+    ("彼", {"かれ"}, {"かの"}),                        # literary
+    ("今日", {"きょう", "こんにち"}, {"こんち", "こんじつ"}),  # minor readings of the same entry
+    ("日", {"ひ"}, {"か", "んち"}),                      # counter/suffix only
+    ("認める", {"みとめる", "したためる"}, set()),         # a different word stays
+    ("外", {"そと", "ほか", "よそ"}, set()),
+])
+def test_ai_check_offers_only_readings_in_use(key, kept, dropped):
+    got = set(server.usable_readings(key))
+    assert kept <= got and not (dropped & got)
+
+
+def test_reading_prompt_sees_the_word_in_long_sentences():
+    s = "あ" * 250 + "希望を抱く。" + "い" * 250
+    w = server.context_window(s, "抱く")
+    assert "希望を抱く" in w and len(w) < 300
+    assert server.context_window("希望を抱く。", "抱く") == "希望を抱く。"
+
+
+def test_long_single_line_streams_in_pieces():
+    import json
+    from fastapi.testclient import TestClient
+    c = TestClient(server.app)
+    text = "早くも檜葉が尊属殺人の規定を念頭に置いてはいないかと、警戒心を張り巡らせる。" * 1500 + "\n終わり。"
+    full = c.post("/api/analyze", json={"text": text}).json()
+    msgs = [json.loads(x) for x in c.post("/api/analyze_stream", json={"text": text}).text.splitlines()][1:]
+    assert len(msgs) > 2
+    paras = []
+    for m in msgs:
+        ps = [list(p) for p in m["paragraphs"]]
+        if m.get("join"):
+            paras[-1] += ps.pop(0)
+        paras += ps
+    assert paras == full["paragraphs"] and len(paras) == 2
+    js = full["text"].encode("utf-16-le")
+    assert all(js[s["s"] * 2:s["e"] * 2].decode("utf-16-le") == s["t"] for p in paras for s in p)
+
+
+def test_names_without_jmnedict(monkeypatch):
+    import sqlite3
+    from fastapi.testclient import TestClient
+    con = sqlite3.connect(":memory:", check_same_thread=False)
+    monkeypatch.setattr(server, "db", lambda: con)
+    r = TestClient(server.app).get("/api/names", params={"word": "平城"})
+    assert r.status_code == 200 and r.json()["names"] == []
+
+
+def test_katakana_name_readings_match_pins(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(server, "PINS_PATH", tmp_path / "pins.json")
+    monkeypatch.setattr(server, "PINS", {})
+    c = TestClient(server.app)
+    rows = c.get("/api/names", params={"word": "３Ｍ"}).json()["names"]
+    assert rows and all(not any("ァ" <= ch <= "ヶ" for ch in n["reading"]) for n in rows)
+    c.post("/api/pins", json={"word": "３Ｍ", "reading": rows[0]["reading"]})
+    assert c.get("/api/names", params={"word": "３Ｍ"}).json()["pinned"] == rows[0]["reading"]
+    seg = next(s for p in server.analyze("３Ｍの製品。") for s in p if s.get("w") and s["t"] == "３Ｍ")
+    assert seg["r"] == [["３Ｍ", rows[0]["reading"]]]  # shown and spoken with the pinned reading
+    assert c.post("/api/pins", json={"word": "３Ｍ", "reading": "ー"}).status_code == 400
+
+
+def test_speak_needs_the_page_header():
+    from fastapi.testclient import TestClient
+    assert TestClient(server.app).get("/api/speak", params={"text": "こんにちは"}).status_code == 403
+
+
 def test_analyze_stream_matches_analyze():
     import json
     from fastapi.testclient import TestClient
@@ -140,6 +221,7 @@ def test_analyze_stream_matches_analyze():
     lines = [json.loads(x) for x in c.post("/api/analyze_stream", json={"text": text}).text.splitlines()]
     assert lines[0]["text"] == full["text"]
     assert len(lines) > 2  # actually chunked
+    assert not any(x.get("join") for x in lines[1:])
     assert [p for x in lines[1:] for p in x["paragraphs"]] == full["paragraphs"]
 
 

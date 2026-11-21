@@ -68,7 +68,8 @@ for the voice by name. The Siri voices in that menu can't be used by apps; they 
 
 A 150,000-character paste shows its first words in under 0.25 s and is fully loaded in about 1.3 s:
 - **Streaming:** the server sends paragraphs as it analyzes them (`/api/analyze_stream`), and the page draws each
-  chunk as it arrives.
+  chunk as it arrives. A text without line breaks (copied from a web page) is sent in sentence-sized pieces, so
+  it streams too.
 - **Off-screen paragraphs:** they skip layout and painting (`content-visibility: auto`). Each one gets a height
   estimate, so the scrollbar stays steady.
 - **Selecting and highlighting:** these look only at the selection's ends, so they take under 1 ms at any length.
@@ -94,10 +95,13 @@ A 150,000-character paste shows its first words in under 0.25 s and is fully loa
 5. **AI reading check** (the **AI 読み** button, on by default): words with several Jitendex readings
    (抱く いだく/だく, 認める みとめる/したためる, 市場 いちば/しじょう…) are sent with their sentences to the
    model, which picks one of Jitendex's readings. Furigana updates about 2 s after pasting. Readings the model
-   changed show in the accent colour, and their popup lists the matching entry first. Rare and obsolete
-   readings are never offered, and 来る/する are left to the tokenizer.
+   changed show in the accent colour, and their popup lists the matching entry first. Only readings in
+   real use are offered: no obsolete, archaic, poetic or literary readings (朝 is never あした, 彼 never かの),
+   no minor reading of the same word when it has a common one (今日 is きょう or こんにち, not こんち), and no
+   counter or suffix readings (日 as か). 来る/する are left to the tokenizer. Very long sentences are trimmed
+   to the part around the word.
 6. **Greetings:** a match that is only an interjection (今日は, 今晩は) counts only before a sentence end, so
-   今日は暑い reads きょう.
+   今日は暑い reads きょう and 今晩は暇だ is 今晩 + は.
    Readings are aligned so furigana sits over the kanji only.
 
 ## Tests

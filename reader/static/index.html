@@ -44,6 +44,7 @@ header .spacer { flex: 1; }
 .btn:hover { background: var(--hover); }
 .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.btn.off-key { opacity: .45; background: none; border-color: var(--line); color: inherit; }
 .btn.icon { padding: 6px 10px; }
 #status { font-size: 13px; color: var(--muted); }
 
@@ -98,6 +99,9 @@ body.no-furi #reader rt { visibility: hidden; }
 .gloss { margin-top: 4px; }
 .gloss ul, .gloss ol { padding-left: 1.3em; margin: .2em 0; }
 .gloss a.q { color: var(--accent); }
+/* single-sense entries (div senses) without bullets, like the numbered ones */
+.gloss div[data-sc-content="sense"] > ul[data-sc-content="glossary"] { list-style-type: none; padding-left: .25em; }
+.gloss .img { opacity: .6; cursor: help; }
 .gloss [data-sc-content="attribution"] { font-size: 11px; opacity: .55; }
 .gloss [data-sc-content="example-sentence"] { font-size: 14px; }
 .gloss table { border-collapse: collapse; font-size: 13px; }
@@ -214,10 +218,10 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const store = {
   get(k, d) { try { const v = localStorage.getItem("jr." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("jr." + k, JSON.stringify(v)); } catch {} },
+  set(k, v) { try { localStorage.setItem("jr." + k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 
-const state = { text: "", segs: [], els: [], chat: [], trCache: new Map(), sel: null, busy: false, hasKey: false, gen: 0, abort: null, baseStatus: "", hl: [] };
+const state = { text: "", segs: [], els: [], chat: [], trCache: new Map(), sel: null, busy: false, hasKey: false, gen: 0, abort: null, baseStatus: "", hl: [], chatGen: 0, chatAbort: null, unsaved: false };
 
 // ---------------------------------------------------------------- text loading
 function cleanPaste(t) {
@@ -261,10 +265,10 @@ async function load(text) {
         buf = buf.slice(nl + 1);
         if (msg.text !== undefined) {
           state.text = msg.text;
-          store.set("text", state.text);
+          state.unsaved = !store.set("text", state.text); // browser storage full: the text won't survive a reload
           showReader();
         } else {
-          appendParagraphs(msg.paragraphs);
+          appendParagraphs(msg.paragraphs, msg.join);
           count += msg.paragraphs.length;
           await new Promise(requestAnimationFrame); // let the browser paint this chunk before the next
           if (gen !== state.gen) return;
@@ -278,7 +282,8 @@ async function load(text) {
     return;
   }
   if (!count) showEmpty();
-  state.baseStatus = `${state.text.replace(/\s/g, "").length.toLocaleString()} characters`;
+  state.baseStatus = `${state.text.replace(/\s/g, "").length.toLocaleString()} characters` +
+    (state.unsaved ? " · too long to keep after a reload" : "");
   updateStatus();
 }
 
@@ -310,30 +315,51 @@ function wordHTML(s) {
   return s.r.map(([b, rt]) => (rt ? `<ruby>${esc(b)}<rt>${esc(rt)}</rt></ruby>` : esc(b))).join("");
 }
 
-function appendParagraphs(paragraphs) {
+function segsHTML(para) {
+  let html = "", chars = 0, ambiguous = false;
+  for (const s of para) {
+    const i = state.segs.push(s) - 1;
+    chars += s.t.length;
+    if (s.a) ambiguous = true;
+    html += s.w
+      ? `<span class="w${s.p ? " p" : ""}${s.pin ? " pinned" : ""}"${s.pin ? ' title="Reading pinned by you"' : ""} data-i="${i}" data-s="${s.s}" data-e="${s.e}">${wordHTML(s)}</span>`
+      : `<span data-i="${i}" data-s="${s.s}" data-e="${s.e}">${esc(s.t)}</span>`;
+  }
+  return { html, chars, ambiguous };
+}
+
+// join: the first paragraph continues the last one on the page (a very long line sent in pieces)
+function appendParagraphs(paragraphs, join = false) {
   const frag = document.createDocumentFragment();
   const observe = aiReadOn() && state.hasKey;
-  for (const para of paragraphs) {
-    const p = document.createElement("p");
+  paragraphs.forEach((para, n) => {
+    const last = $("#reader").lastElementChild;
+    const cont = n === 0 && join && last && last.tagName === "P";
+    const p = cont ? last : document.createElement("p");
     const from = state.segs.length;
-    let html = "", chars = 0, ambiguous = false;
-    for (const s of para) {
-      const i = state.segs.push(s) - 1;
-      chars += s.t.length;
-      if (s.a) ambiguous = true;
-      html += s.w
-        ? `<span class="w${s.p ? " p" : ""}${s.pin ? " pinned" : ""}"${s.pin ? ' title="Reading pinned by you"' : ""} data-i="${i}" data-s="${s.s}" data-e="${s.e}">${wordHTML(s)}</span>`
-        : `<span data-i="${i}" data-s="${s.s}" data-e="${s.e}">${esc(s.t)}</span>`;
-    }
-    if (!chars || !para.some((s) => s.t.trim())) p.className = "blank";
-    else p.style.containIntrinsicSize = `auto ${Math.round(estimateHeight(chars))}px`;
-    p.innerHTML = html;
-    for (let k = 0; k < p.children.length; k++) state.els[from + k] = p.children[k]; // span k is segment from+k
-    p.dataset.from = from; p.dataset.to = state.segs.length;
-    if (observe && ambiguous) aiObserver.observe(p);
-    frag.append(p);
-  }
+    const { html, chars, ambiguous } = segsHTML(para);
+    const before = cont ? p.children.length : 0;
+    const total = chars + (cont ? +(p.dataset.chars || 0) : 0);
+    const hasText = para.some((s) => s.t.trim()) || (cont && p.dataset.text === "1");
+    if (!hasText) p.className = "blank";
+    else { p.className = ""; p.dataset.text = "1"; p.style.containIntrinsicSize = `auto ${Math.round(estimateHeight(total))}px`; }
+    p.dataset.chars = total;
+    p.insertAdjacentHTML("beforeend", html);
+    for (let k = before; k < p.children.length; k++) state.els[from + k - before] = p.children[k]; // span k is segment from+k
+    if (!cont) p.dataset.from = from;
+    p.dataset.to = state.segs.length;
+    if (observe && ambiguous) { if (cont) aiObserver.unobserve(p); aiObserver.observe(p); }
+    if (!cont) frag.append(p);
+  });
   $("#reader").append(frag);
+}
+
+// After /api/config arrives (or the check is switched on): watch paragraphs drawn before that.
+function observeAmbiguous() {
+  if (!(aiReadOn() && state.hasKey)) return;
+  for (const p of $("#reader").querySelectorAll("p")) {
+    for (let i = +p.dataset.from; i < +p.dataset.to; i++) if (state.segs[i].a && !state.segs[i].queued) { aiObserver.observe(p); break; }
+  }
 }
 
 // Segments are sorted by offset: first segment that ends after pos.
@@ -405,6 +431,7 @@ function applyReading(i, reading) {
 
 $("#btn-ai-read").addEventListener("click", () => {
   const on = !aiReadOn();
+  if (!state.hasKey) { setStatus("The AI reading check needs OPENCODE_API_KEY in reader/.env"); return; }
   $("#btn-ai-read").classList.toggle("on", on);
   store.set("aiRead", on);
   if (state.text) load(state.text); // re-render: with the check, or back to the tokenizer's readings
@@ -431,6 +458,10 @@ function sc(node) {
   if (Array.isArray(node)) { const f = document.createDocumentFragment(); node.forEach((n) => f.append(sc(n))); return f; }
   if (node.type === "structured-content") return sc(node.content);
   if (node.type === "text") return document.createTextNode(node.text || "");
+  if (node.tag === "img") { // Jitendex's few pictures live inside the zip; show that one is there
+    const i = document.createElement("span"); i.className = "img"; i.textContent = "🖼";
+    i.title = node.title || node.alt || node.description || "picture (not shown)"; return i;
+  }
   if (!node.tag || !SC_TAGS.has(node.tag)) return document.createTextNode("");
   const el = document.createElement(node.tag);
   if (node.title) el.title = node.title;
@@ -473,7 +504,7 @@ function headwordHTML(e) {
 const audioCache = new Map(); // text -> Promise<object URL>
 function audioURL(text) {
   if (!audioCache.has(text)) {
-    const p = fetch("/api/speak?text=" + encodeURIComponent(text))
+    const p = fetch("/api/speak?text=" + encodeURIComponent(text), { headers: { "X-Reader": "1" } })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 120)}`); return r.blob(); })
       .then((b) => URL.createObjectURL(b));
     p.catch(() => audioCache.delete(text));
@@ -481,7 +512,7 @@ function audioURL(text) {
     if (audioCache.size > 60) { // forget the oldest clip
       const [k, old] = audioCache.entries().next().value;
       audioCache.delete(k);
-      old.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+      old.then((u) => { if (player.src !== u) URL.revokeObjectURL(u); }).catch(() => {});
     }
   }
   return audioCache.get(text);
@@ -495,6 +526,7 @@ function stopSpeech() {
 }
 async function speak(text, btn) {
   if (!text) return;
+  if (text.length > 3000) { text = text.slice(0, 3000); setStatus("Reading the first 3,000 characters aloud"); }
   if (playing && playing.text === text) { stopSpeech(); return; } // second press stops
   stopSpeech();
   playing = { text, btn };
@@ -510,6 +542,14 @@ async function speak(text, btn) {
   }
 }
 player.addEventListener("ended", stopSpeech);
+// Synthesize when the pointer reaches a 🔊 button (not on every click or selection), so playback starts sooner.
+document.addEventListener("pointerover", (e) => {
+  if (!e.target.closest) return;
+  let text = "";
+  if (e.target.closest("#dictpop .say")) text = $("#dictpop").dataset.say;
+  else if (e.target.closest("#sel-say, #tr-say") && state.sel) text = state.sel.say;
+  if (text && text.length <= 3000) audioURL(text).catch(() => {});
+});
 
 // What to say: the reading shown in the furigana for words the AI or the dictionary disambiguated
 // (so 抱いた is read だいた, not whatever the voice guesses), the original text elsewhere for natural prosody.
@@ -536,7 +576,6 @@ async function lookup(keys, anchor, titleHTML, conj = {}, prefer = null, sayText
   const pop = $("#dictpop");
   pop.innerHTML = `<div class="bar"><div class="grow"></div>${sayText ? `<button class="say" title="Read aloud">🔊</button>` : ""}<button class="x" title="Close">×</button></div><div class="body"><div class="none">Looking up…</div></div>`;
   pop.dataset.say = sayText;
-  if (sayText) audioURL(sayText).catch(() => {}); // prefetch so 🔊 plays at once
   pop.querySelector(".grow").innerHTML = titleHTML;
   pop.hidden = false;
   place(pop, anchor);
@@ -700,7 +739,6 @@ $("#reader").addEventListener("mouseup", () => setTimeout(() => {
   if (!o) return;
   const [s, e] = expandToSentences(o.s, o.e);
   state.sel = { s, e, text: state.text.slice(s, e), rect: o.rect, say: speechText(s, e) };
-  audioURL(state.sel.say).catch(() => {}); // prefetch, so 🔊 Read starts without the ~1.5 s synthesis wait
   const bar = $("#selbar");
   bar.hidden = false;
   const r = o.rect;
@@ -740,8 +778,8 @@ $("#dictpop").addEventListener("click", (ev) => {
 });
 
 // ---------------------------------------------------------------- streaming helper + markdown
-async function streamPost(url, body, onText) {
-  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+async function streamPost(url, body, onText, signal) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 300)}`);
   const reader = r.body.getReader();
   const dec = new TextDecoder();
@@ -847,6 +885,9 @@ function renderChat() {
 async function sendChat(text) {
   if (state.busy || !text.trim()) return;
   state.busy = true;
+  const gen = state.chatGen;
+  const ctrl = new AbortController();
+  state.chatAbort = ctrl;
   $("#chat-form button").disabled = true;
   state.chat.push({ role: "user", content: text.trim() });
   renderChat();
@@ -857,9 +898,11 @@ async function sendChat(text) {
   const stick = () => { box.scrollTop = box.scrollHeight; };
   try {
     const msgs = state.chat.map(({ role, content }) => ({ role, content }));
-    const full = await streamPost("/api/chat", { text: state.text, messages: msgs }, (t) => { d.innerHTML = md(t); stick(); });
+    const full = await streamPost("/api/chat", { text: state.text, messages: msgs }, (t) => { if (gen === state.chatGen) { d.innerHTML = md(t); stick(); } }, ctrl.signal);
+    if (gen !== state.chatGen) return; // the conversation was cleared or the text replaced meanwhile
     state.chat.push({ role: "assistant", content: full });
   } catch (err) {
+    if (gen !== state.chatGen) return;
     state.chat.push({ role: "assistant", content: "⚠️ " + err });
   }
   state.busy = false;
@@ -877,7 +920,17 @@ $("#chat-form").addEventListener("submit", (e) => {
   if (state.busy) return; // keep the draft; Send is disabled until the reply finishes
   const v = $("#chat-input").value; $("#chat-input").value = ""; autosize(); sendChat(v);
 });
-$("#btn-clear").addEventListener("click", () => { state.chat = []; renderChat(); });
+// New conversation: drop any reply still streaming for the old one.
+function resetChat() {
+  state.chatGen++;
+  if (state.chatAbort) state.chatAbort.abort();
+  state.chatAbort = null;
+  state.busy = false;
+  $("#chat-form button").disabled = false;
+  state.chat = [];
+  renderChat();
+}
+$("#btn-clear").addEventListener("click", resetChat);
 
 function openChat(force) {
   const hidden = document.body.classList.toggle("chat-hidden", force === undefined ? undefined : !force);
@@ -931,7 +984,7 @@ $("#btn-bigger").addEventListener("click", () => setSize(store.get("fs", 22) + 2
 
 function pasteText(t) {
   if (!t || !t.trim()) { setStatus("The clipboard has no text."); return; }
-  if (state.chat.length && t.trim() !== state.text) { state.chat = []; renderChat(); } // new text, new conversation
+  if ((state.chat.length || state.busy) && cleanPaste(t) !== state.text) resetChat(); // new text, new conversation
   load(t);
 }
 document.addEventListener("paste", (e) => {
@@ -945,12 +998,13 @@ $("#btn-paste").addEventListener("click", async () => {
   } catch {
     // clipboard access denied or unsupported: fall back to the editor so ⌘V still works
     showEditor();
-    $("#input").value = "";
+    $("#input").select(); // ⌘V replaces the text, and nothing is lost if you change your mind
     setStatus("Clipboard access was blocked. Press ⌘V in the box, then Read →");
   }
 });
 $("#btn-clear-text").addEventListener("click", () => {
   resetReader();
+  resetChat(); // the conversation was about the removed text
   state.text = ""; state.baseStatus = "";
   store.set("text", "");
   $("#input").value = "";
@@ -978,6 +1032,11 @@ $("#main").addEventListener("scroll", () => {
     const c = await (await fetch("/api/config")).json();
     state.hasKey = c.has_key;
     $("#model").textContent = c.model + (c.has_key ? "" : " · no API key");
+    if (!c.has_key) {
+      $("#btn-ai-read").classList.add("off-key");
+      $("#btn-ai-read").title = "AI reading check is off: set OPENCODE_API_KEY in reader/.env and restart the server";
+    }
+    observeAmbiguous(); // a text pasted before the config arrived
   } catch { $("#model").textContent = "server offline?"; }
   const saved = store.get("text", "");
   if (saved) load(saved); else showEmpty();
